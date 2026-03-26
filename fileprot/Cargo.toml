@@ -1,0 +1,21 @@
+[package]
+name = "fileprot"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[[bin]]
+name = "fileprot"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+dioxus = { workspace = true, features = ["desktop"] }
+env_logger = { workspace = true }
+fileprot-common = { workspace = true }
+futures-lite = { workspace = true }
+gtk = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tray-icon = { workspace = true }
+zbus = { workspace = true }

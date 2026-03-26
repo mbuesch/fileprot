@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "fileprot-common",
+    "fileprotd",
+    "fileprot",
+]
+resolver = "3"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+
+[workspace.dependencies]
+anyhow = "1"
+dioxus = { version = "0.7", features = ["desktop"] }
+env_logger = "0.11"
+fuser = "0.17"
+futures-lite = "2"
+gtk = "0.18"
+libc = "0.2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", default-features = false }
+toml = "1.1"
+tray-icon = "0.21"
+zbus = { version = "5.14", default-features = false, features = ["tokio"] }
+
+fileprot-common = { path = "./fileprot-common" }

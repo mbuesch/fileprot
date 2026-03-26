@@ -1,0 +1,11 @@
+[package]
+name = "fileprot-common"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+zbus = { workspace = true, features = ["blocking-api"] }

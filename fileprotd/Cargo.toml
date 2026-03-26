@@ -1,0 +1,20 @@
+[package]
+name = "fileprotd"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[[bin]]
+name = "fileprotd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+fileprot-common = { workspace = true }
+fuser = { workspace = true }
+zbus = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "signal"] }
+log = { workspace = true }
+env_logger = { workspace = true }
+libc = { workspace = true }
+clap = { version = "4", features = ["derive"] }

@@ -1,0 +1,110 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+}
+.container {
+    padding: 20px;
+    max-width: 800px;
+    margin: 0 auto;
+}
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #333;
+}
+.header h1 {
+    font-size: 24px;
+    color: #3399ff;
+}
+.status {
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 12px;
+    background: #442222;
+    color: #ff6666;
+}
+.status.connected {
+    background: #224422;
+    color: #66ff66;
+}
+.empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: #888;
+}
+.empty p { margin-bottom: 8px; }
+.hint { font-size: 14px; }
+.request-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+.request-card {
+    background: #16213e;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+}
+.request-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.request-field {
+    display: flex;
+    gap: 8px;
+    font-size: 14px;
+}
+.label {
+    font-weight: 600;
+    color: #999;
+    min-width: 100px;
+}
+.value { color: #e0e0e0; }
+.value.path {
+    font-family: monospace;
+    word-break: break-all;
+    color: #ffd700;
+}
+.op-read { color: #66bbff; }
+.op-write { color: #ffaa33; }
+.op-create { color: #66ff66; }
+.op-delete { color: #ff6666; font-weight: bold; }
+.request-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.btn {
+    padding: 10px 24px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    min-width: 100px;
+}
+.btn-approve {
+    background: #28a745;
+    color: white;
+}
+.btn-approve:hover { background: #218838; }
+.btn-deny {
+    background: #dc3545;
+    color: white;
+}
+.btn-deny:hover { background: #c82333; }
