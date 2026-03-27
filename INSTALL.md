@@ -52,11 +52,11 @@ sudo chmod 755 /opt/fileprot/bin/fileprotd /opt/fileprot/bin/fileprot
 
 ```bash
 sudo mkdir -p /opt/fileprot/etc/fileprot
-sudo cp fileprot.conf.example /opt/fileprot/etc/fileprot/fileprot.conf
+sudo cp fileprotd.conf.example /opt/fileprot/etc/fileprot/fileprotd.conf
 sudo chown -R root:root /opt/fileprot/etc
 ```
 
-Edit `/opt/fileprot/etc/fileprot/fileprot.conf` to configure your protected mounts.
+Edit `/opt/fileprot/etc/fileprot/fileprotd.conf` to configure your protected mounts.
 
 ### 3. Create backing directories
 

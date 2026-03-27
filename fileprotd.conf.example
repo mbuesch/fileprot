@@ -1,0 +1,51 @@
+#
+# fileprotd configuration file
+#
+#
+
+# Path to the GUI binary.
+# Used for D-Bus peer verification to ensure only the legitimate GUI can
+# approve/reject access requests.
+#
+gui_binary_path = "/opt/fileprot/bin/fileprot"
+
+# Timeout in seconds for access requests.
+# If no response is received within this time, the request is automatically denied.
+#
+request_timeout_secs = 120
+
+# Base directory for all backing storage on the host filesystem.
+# Mount backing_dir values that are relative paths are resolved against this directory.
+#
+backing_base_dir = "/opt/fileprot/var/lib/fileprot-backing"
+
+
+# Each [[mount]] section defines a protected FUSE filesystem.
+#
+[[mount]]
+# disabled: When true, this mount will not be activated by the daemon.
+# Uncomment and set to true to disable this mount.
+#
+#disabled = true
+
+# name: A unique identifier for this mount.
+# Used as the default backing directory name if `backing_dir` is not supplied.
+#
+name = "protected"
+
+# mountpoint: the path where the FUSE filesystem will be mounted.
+#
+mountpoint = "/mnt/protected"
+
+# backing_dir: Directory under `backing_base_dir` where the backing store for this mount is kept.
+# If omitted, it defaults to the value of `name` (above).
+# Use an absolute path to override `backing_base_dir`.
+#
+#backing_dir = "protected"
+
+
+
+[[mount]]
+disabled = true # This mount is disabled
+name = "another_protected"
+mountpoint = "/mnt/another_protected"

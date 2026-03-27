@@ -16,7 +16,7 @@
 - The FUSE mounts are managed by a systemd service.
 - The service runs as root.
 - The daemon shall be installed to `/opt/fileprot/bin/`
-- The configuration file shall be located in `/opt/fileprot/etc/fileprot/fileprot.conf`
+- The configuration file shall be located in `/opt/fileprot/etc/fileprot/fileprotd.conf`
 - Document how to install.
 
 ## GUI

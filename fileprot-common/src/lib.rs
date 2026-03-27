@@ -17,7 +17,7 @@ pub const DBUS_INTERFACE_NAME: &str = "ch.bues.fileprot.AccessControl";
 pub const DEFAULT_GUI_BINARY_PATH: &str = "/opt/fileprot/bin/fileprot";
 
 /// Default configuration file path.
-pub const DEFAULT_CONFIG_PATH: &str = "/opt/fileprot/etc/fileprot/fileprot.conf";
+pub const DEFAULT_CONFIG_PATH: &str = "/opt/fileprot/etc/fileprot/fileprotd.conf";
 
 /// Default base directory for all backing storage.
 pub const DEFAULT_BACKING_BASE_DIR: &str = "/opt/fileprot/var/lib/fileprot-backing";

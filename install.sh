@@ -35,18 +35,18 @@ install_conf()
         -o root -g root -m 0755 \
         -d /opt/fileprot/etc/fileprot
 
-    if [ -e /opt/fileprot/etc/fileprot/fileprot.conf ]; then
+    if [ -e /opt/fileprot/etc/fileprot/fileprotd.conf ]; then
         do_chown \
             root:root \
-            /opt/fileprot/etc/fileprot/fileprot.conf
+            /opt/fileprot/etc/fileprot/fileprotd.conf
         do_chmod \
             0640 \
-            /opt/fileprot/etc/fileprot/fileprot.conf
+            /opt/fileprot/etc/fileprot/fileprotd.conf
     else
         do_install \
             -o root -g root -m 0640 \
-            "$basedir/fileprot.conf.example" \
-            /opt/fileprot/etc/fileprot/fileprot.conf
+            "$basedir/fileprotd.conf.example" \
+            /opt/fileprot/etc/fileprot/fileprotd.conf
     fi
 }
 
