@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 /// Top-level configuration structure.
@@ -12,22 +13,36 @@ pub struct Config {
     /// Path to the GUI binary for peer verification.
     /// Defaults to /opt/fileprot/bin/fileprot.
     #[serde(default = "default_gui_binary_path")]
-    pub gui_binary_path: PathBuf,
+    gui_binary_path: PathBuf,
 
     /// Timeout in seconds for access requests. If the user does not respond
     /// within this time, the request is denied. Defaults to 120 seconds.
     #[serde(default = "default_request_timeout_secs")]
-    pub request_timeout_secs: u64,
+    request_timeout_secs: u64,
 
     /// Base directory for all backing storage on the host filesystem.
     /// Mount backing_dir paths that are relative are resolved against this
     /// directory. Defaults to /opt/fileprot/var/lib/fileprot-backing.
     #[serde(default = "default_backing_base_dir")]
-    pub backing_base_dir: PathBuf,
+    backing_base_dir: PathBuf,
 
     /// List of FUSE mount configurations.
     #[serde(rename = "mount")]
-    pub mounts: Vec<MountConfig>,
+    mounts: Vec<MountConfig>,
+}
+
+impl Config {
+    pub fn gui_binary_path(&self) -> &Path {
+        &self.gui_binary_path
+    }
+
+    pub fn request_timeout(&self) -> Duration {
+        Duration::from_secs(self.request_timeout_secs)
+    }
+
+    pub fn mounts(&self) -> &[MountConfig] {
+        &self.mounts
+    }
 }
 
 /// Configuration for a single FUSE mount.
@@ -35,23 +50,36 @@ pub struct Config {
 pub struct MountConfig {
     /// If true, this mount is disabled and will not be started.
     /// Defaults to false.
-    pub disabled: Option<bool>,
+    disabled: Option<bool>,
 
     /// Human-readable name for this mount.
-    pub name: String,
+    name: String,
 
     /// Path where the FUSE filesystem will be mounted.
-    pub mountpoint: PathBuf,
+    mountpoint: PathBuf,
 
     /// Path to the backing directory on the host filesystem.
     /// If relative, it is resolved against the global backing_base_dir.
-    /// Defaults to the mount name.
-    pub backing_dir: Option<PathBuf>,
+    backing_dir: Option<PathBuf>,
 }
 
 impl MountConfig {
     pub fn disabled(&self) -> bool {
         self.disabled.unwrap_or(false)
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn mountpoint(&self) -> &Path {
+        &self.mountpoint
+    }
+
+    pub fn backing_dir(&self) -> PathBuf {
+        self.backing_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(&self.name))
     }
 }
 
@@ -81,12 +109,11 @@ impl Config {
     /// Resolve relative backing_dir paths against backing_base_dir.
     fn resolve_backing_dirs(&mut self) {
         for mount in &mut self.mounts {
-            let backing_dir = mount
-                .backing_dir
-                .get_or_insert_with(|| PathBuf::from(&mount.name));
-            if backing_dir.is_relative() {
-                *backing_dir = self.backing_base_dir.join(&*backing_dir);
+            let backing_dir = mount.backing_dir();
+            if backing_dir.is_absolute() {
+                continue;
             }
+            mount.backing_dir = Some(self.backing_base_dir.join(&backing_dir));
         }
     }
 
@@ -126,16 +153,7 @@ impl Config {
                     mount.mountpoint.display()
                 ));
             }
-            let backing_dir = mount
-                .backing_dir
-                .as_ref()
-                .ok_or_else(|| err!("backing_dir not resolved (internal error)"))?;
-            if !backing_dir.is_absolute() {
-                return Err(err!(
-                    "invalid config: backing_dir '{}' must be an absolute path",
-                    backing_dir.display()
-                ));
-            }
+            assert!(mount.backing_dir().is_absolute(), "backing_dir must be absolute");
         }
         Ok(())
     }

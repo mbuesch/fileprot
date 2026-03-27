@@ -2,7 +2,7 @@ use anyhow as ah;
 use clap::Parser;
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
 use fuser::{Config as FuserConfig, MountOption, SessionACL, spawn_mount2};
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc};
 use tokio::{
     signal::{
         ctrl_c,
@@ -39,8 +39,8 @@ async fn main() -> ah::Result<()> {
     let config = Config::load(&config_path)?;
     log::info!(
         "Configuration loaded: {} mount(s), gui_binary={}",
-        config.mounts.len(),
-        config.gui_binary_path.display()
+        config.mounts().len(),
+        config.gui_binary_path().display()
     );
 
     // Create the request channel (FUSE threads -> D-Bus service).
@@ -48,49 +48,46 @@ async fn main() -> ah::Result<()> {
 
     // Start the D-Bus service.
     let _connection =
-        dbus_service::start_dbus_service(request_rx, config.gui_binary_path.clone()).await?;
+        dbus_service::start_dbus_service(request_rx, config.gui_binary_path().to_path_buf())
+            .await?;
     log::info!("D-Bus service started on system bus");
 
     // Create the shared access controller.
     let access_controller = Arc::new(access_control::AccessController::new(
         request_tx,
-        Duration::from_secs(config.request_timeout_secs),
+        config.request_timeout(),
     ));
 
     // Mount FUSE filesystems.
-    let mut sessions = Vec::with_capacity(config.mounts.len());
-    for mount_cfg in &config.mounts {
+    let mut sessions = Vec::with_capacity(config.mounts().len());
+    for mount_cfg in config.mounts() {
         if mount_cfg.disabled() {
-            log::info!("Mount '{}' is disabled, skipping", mount_cfg.name);
+            log::info!("Mount '{}' is disabled, skipping", mount_cfg.name());
             continue;
         }
-        let backing_dir = mount_cfg
-            .backing_dir
-            .as_ref()
-            .expect("backing_dir not resolved");
         log::info!(
             "Mounting '{}': {} -> {}",
-            mount_cfg.name,
-            mount_cfg.mountpoint.display(),
-            backing_dir.display()
+            mount_cfg.name(),
+            mount_cfg.mountpoint().display(),
+            mount_cfg.backing_dir().display()
         );
 
         let fs = filesystem::ProtectedFilesystem::new(
-            mount_cfg.name.clone(),
-            backing_dir.clone(),
+            mount_cfg.name().to_string(),
+            mount_cfg.backing_dir().to_path_buf(),
             access_controller.clone(),
         );
 
         let mut config = FuserConfig::default();
         config.mount_options = vec![
-            MountOption::FSName(format!("fileprot:{}", mount_cfg.name)),
+            MountOption::FSName(format!("fileprot:{}", mount_cfg.name())),
             MountOption::AutoUnmount,
         ];
         config.acl = SessionACL::All;
 
-        let session = spawn_mount2(fs, &mount_cfg.mountpoint, &config)?;
-        sessions.push((mount_cfg.name.clone(), session));
-        log::info!("Mount '{}' active", mount_cfg.name);
+        let session = spawn_mount2(fs, mount_cfg.mountpoint(), &config)?;
+        sessions.push((mount_cfg.name().to_string(), session));
+        log::info!("Mount '{}' active", mount_cfg.name());
     }
 
     log::info!("fileprotd running with {} active mount(s)", sessions.len());
