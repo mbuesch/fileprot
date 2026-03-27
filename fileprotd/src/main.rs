@@ -60,7 +60,7 @@ async fn main() -> ah::Result<()> {
     // Mount FUSE filesystems.
     let mut sessions = Vec::with_capacity(config.mounts.len());
     for mount_cfg in &config.mounts {
-        if mount_cfg.disabled {
+        if mount_cfg.disabled() {
             log::info!("Mount '{}' is disabled, skipping", mount_cfg.name);
             continue;
         }

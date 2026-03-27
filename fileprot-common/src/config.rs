@@ -35,7 +35,7 @@ pub struct Config {
 pub struct MountConfig {
     /// If true, this mount is disabled and will not be started.
     /// Defaults to false.
-    pub disabled: bool,
+    pub disabled: Option<bool>,
 
     /// Human-readable name for this mount.
     pub name: String,
@@ -47,6 +47,12 @@ pub struct MountConfig {
     /// If relative, it is resolved against the global backing_base_dir.
     /// Defaults to the mount name.
     pub backing_dir: Option<PathBuf>,
+}
+
+impl MountConfig {
+    pub fn disabled(&self) -> bool {
+        self.disabled.unwrap_or(false)
+    }
 }
 
 fn default_gui_binary_path() -> PathBuf {
@@ -97,7 +103,7 @@ impl Config {
             ));
         }
         for mount in &self.mounts {
-            if mount.disabled {
+            if mount.disabled() {
                 continue;
             }
             if mount.name.is_empty() {
