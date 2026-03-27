@@ -1,7 +1,8 @@
 use dioxus::{
     LaunchBuilder,
-    desktop::{Config as DesktopConfig, LogicalSize, WindowBuilder, WindowCloseBehaviour},
+    desktop::{Config as DesktopConfig, LogicalSize, WindowBuilder, WindowCloseBehaviour, tao},
 };
+use image::GenericImageView;
 use std::{process, sync::atomic::Ordering};
 use tray_icon::{
     TrayIconBuilder,
@@ -10,6 +11,19 @@ use tray_icon::{
 
 mod dbus_client;
 mod ui;
+
+const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
+
+fn load_window_icon() -> Option<tao::window::Icon> {
+    let img = image::load_from_memory(ICON_PNG)
+        .map_err(|e| log::warn!("Failed to load window icon: {}", e))
+        .ok()?;
+    let (width, height) = img.dimensions();
+    let rgba = img.into_rgba8().into_raw();
+    tao::window::Icon::from_rgba(rgba, width, height)
+        .map_err(|e| log::warn!("Failed to create window icon: {}", e))
+        .ok()
+}
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -53,7 +67,8 @@ fn main() {
                 .with_window(
                     WindowBuilder::new()
                         .with_title("fileprot - Access Requests")
-                        .with_inner_size(LogicalSize::new(700.0, 500.0)),
+                        .with_inner_size(LogicalSize::new(700.0, 500.0))
+                        .with_window_icon(load_window_icon()),
                 )
                 .with_close_behaviour(WindowCloseBehaviour::WindowHides),
         )

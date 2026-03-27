@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+base64 = { workspace = true }
 dioxus = { workspace = true, features = ["desktop"] }
 env_logger = { workspace = true }
 fileprot-common = { workspace = true }

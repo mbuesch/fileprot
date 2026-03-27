@@ -1,17 +1,27 @@
 use crate::dbus_client::{AccessRequestInfo, connect};
+use base64::Engine;
 use dioxus::desktop::window;
 use dioxus::prelude::*;
 use futures_lite::StreamExt;
+use image::GenericImageView;
 use std::{
     pin::pin,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
-use image::GenericImageView;
 use tray_icon::Icon;
 
 const CSS: &str = include_str!("style.css");
 const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
+const ICON_RAW_2_PNG: &[u8] = include_bytes!("../../assets/icon_raw_2.png");
+
+static ICON_RAW_2_DATA_URI: LazyLock<String> = LazyLock::new(|| {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(ICON_RAW_2_PNG);
+    format!("data:image/png;base64,{}", encoded)
+});
 
 /// Shared state: set by the tray "Show" handler, polled by the Dioxus coroutine.
 pub static SHOW_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -170,6 +180,11 @@ pub fn app() -> Element {
         style { {CSS} }
         div { class: "container",
             div { class: "header",
+                img {
+                    class: "header-icon",
+                    src: ICON_RAW_2_DATA_URI.as_str(),
+                    alt: "fileprot",
+                }
                 h1 { "fileprot" }
                 span { class: if status == "Connected" { "status connected" } else { "status" },
                     "{status}"

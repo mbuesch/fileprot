@@ -25,6 +25,11 @@ body {
     font-size: 24px;
     color: #3399ff;
 }
+.header-icon {
+    width: 40px;
+    height: 40px;
+    margin-right: 10px;
+}
 .status {
     font-size: 12px;
     padding: 4px 12px;

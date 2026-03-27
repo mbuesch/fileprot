@@ -1303,6 +1303,7 @@ name = "fileprot"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64",
  "dioxus",
  "env_logger",
  "fileprot-common",
