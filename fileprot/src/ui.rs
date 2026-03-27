@@ -7,9 +7,11 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
+use image::GenericImageView;
 use tray_icon::Icon;
 
 const CSS: &str = include_str!("style.css");
+const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
 
 /// Shared state: set by the tray "Show" handler, polled by the Dioxus coroutine.
 pub static SHOW_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -253,31 +255,10 @@ fn render_request(req: AccessRequestInfo, dbus_tx: Coroutine<DbusAction>) -> Ele
     }
 }
 
-/// Create a simple 32x32 RGBA icon for the tray.
+/// Load the tray icon from the embedded PNG asset.
 pub fn create_icon() -> Icon {
-    let width = 32u32;
-    let height = 32u32;
-    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height {
-        for x in 0..width {
-            // Draw a simple shield shape.
-            let cx = width as f32 / 2.0;
-            let cy = height as f32 / 2.0;
-            let dx = (x as f32 - cx).abs() / cx;
-            let dy = (y as f32 - cy) / cy;
-            let in_shield = dx < (1.0 - dy * 0.5) && dy < 0.8 && dy > -0.9;
-            if in_shield {
-                rgba.push(0x33); // R
-                rgba.push(0x99); // G
-                rgba.push(0xFF); // B
-                rgba.push(0xFF); // A
-            } else {
-                rgba.push(0x00);
-                rgba.push(0x00);
-                rgba.push(0x00);
-                rgba.push(0x00);
-            }
-        }
-    }
+    let img = image::load_from_memory(ICON_PNG).expect("failed to load icon PNG");
+    let (width, height) = img.dimensions();
+    let rgba = img.into_rgba8().into_raw();
     Icon::from_rgba(rgba, width, height).expect("failed to create tray icon")
 }
