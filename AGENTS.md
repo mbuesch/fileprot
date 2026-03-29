@@ -12,27 +12,26 @@
 
 ## Service / Daemon
 
-- The daemon shall be called `fileprotd`
+- The daemon is called `fileprotd`
 - The FUSE mounts are managed by a systemd service.
 - The service runs as root.
-- The daemon shall be installed to `/opt/fileprot/bin/`
-- The configuration file shall be located in `/opt/fileprot/etc/fileprot/fileprotd.conf`
-- Document how to install.
+- The daemon is installed to `/opt/fileprot/bin/`
+- The configuration file is located in `/opt/fileprot/etc/fileprot/fileprotd.conf`
 
 ## GUI
 
-- The GUI shall be named `fileprot`
+- The GUI is named `fileprot`
 - The GUI is implemented with Dioxus.
 - A desktop tray application provides the primary user interface for approving or rejecting access requests.
-- The user shall be able to see the PID, file path, application name and operation type of the application that requests access before approval or rejection.
-- There shall be no "always allow" or similar shortcuts.
-- The GUI shall be installed to `/opt/fileprot/bin/`
+- The user is able to see the PID, file path, application name and operation type of the application that requests access before approval or rejection.
+- There are no "always allow" or similar shortcuts.
+- The GUI is installed to `/opt/fileprot/bin/`
 - Use the crate `tray-icon`.
 
 ## Communication between Daemon and GUI
 
 - Use D-Bus for communication.
-- If possible, it shall be verified if the GUI peer during communication is a legitimate fileprot peer.
+- It is verified if the GUI peer during communication is a legitimate fileprot peer.
 
 ## Implementation process
 
@@ -45,8 +44,10 @@
 - `use` statments shall only be at the top of the file.
 - Generally avoid `unwrap()`.
 - When unwrapping a lock guard, use `expect("Lock poisoned")` instead of `unwrap()`.
-- Avoid using Rust paths that originate in crate root where it makes sense. Instead, use `use` statements to bring them into scope.
+- Avoid using Rust paths that originate in the crate root where it makes sense. Instead, use `use` statements to bring them into scope.
 - Always run `cargo clippy` after making changes to the code. Do not ignore clippy warnings. `cargo build` is not so important. Prefer clippy.
+- After changing code, run `cargo fmt` to ensure consistent formatting.
+- After changing Dioxus code, run `dx fmt` to ensure consistent formatting of Dioxus code.
 
 ## Crate versions
 
