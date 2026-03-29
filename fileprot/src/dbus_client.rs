@@ -11,13 +11,3 @@ pub async fn connect() -> ah::Result<AccessControlProxy<'static>> {
         .await
         .context("failed to create D-Bus proxy")
 }
-
-/// An access request received from the daemon.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AccessRequestInfo {
-    pub id: String,
-    pub pid: u32,
-    pub path: String,
-    pub app_name: String,
-    pub operation: String,
-}

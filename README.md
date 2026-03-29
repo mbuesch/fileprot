@@ -40,8 +40,6 @@ The GUI fetches outstanding requests and approves or rejects them.
 
 Before processing a response, the daemon verifies that the calling peer's executable matches the configured `gui_binary_path`, so only the legitimate `fileprot` binary can approve or reject requests.
 
-## Prerequisites
-
 ## Installation
 
 See [INSTALL.md](INSTALL.md) for the full step-by-step installation guide.

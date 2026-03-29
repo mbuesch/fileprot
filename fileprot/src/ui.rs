@@ -1,7 +1,8 @@
-use crate::dbus_client::{AccessRequestInfo, connect};
+use crate::dbus_client::connect;
 use base64::Engine;
 use dioxus::desktop::window;
 use dioxus::prelude::*;
+use fileprot_common::dbus_interface::AccessControlRequest;
 use futures_lite::StreamExt;
 use image::GenericImageView;
 use std::{
@@ -33,7 +34,7 @@ enum DbusAction {
 }
 
 pub fn app() -> Element {
-    let mut requests = use_signal(Vec::<AccessRequestInfo>::new);
+    let mut requests = use_signal(Vec::<AccessControlRequest>::new);
     let mut connection_status = use_signal(|| "Connecting...".to_string());
 
     // Coroutine that polls for show/quit signals from the tray icon.
@@ -69,19 +70,9 @@ pub fn app() -> Element {
         // Load any already-pending requests.
         match proxy.get_pending_requests().await {
             Ok(pending) => {
-                let infos: Vec<AccessRequestInfo> = pending
-                    .into_iter()
-                    .map(|r| AccessRequestInfo {
-                        id: r.id,
-                        pid: r.pid,
-                        path: r.path,
-                        app_name: r.app_name,
-                        operation: r.operation,
-                    })
-                    .collect();
-                if !infos.is_empty() {
-                    log::info!("Loaded {} pending request(s)", infos.len());
-                    requests.set(infos);
+                if !pending.is_empty() {
+                    log::info!("Loaded {} pending request(s)", pending.len());
+                    requests.set(pending);
                 }
             }
             Err(e) => {
@@ -104,7 +95,7 @@ pub fn app() -> Element {
         // Process both incoming signals and outgoing responses using select-style loop.
         loop {
             enum Event {
-                Signal(AccessRequestInfo),
+                Signal(AccessControlRequest),
                 Action(DbusAction),
                 SignalStreamEnded,
                 ActionStreamEnded,
@@ -114,13 +105,7 @@ pub fn app() -> Element {
                 async {
                     match signal_stream.next().await {
                         Some(signal) => match signal.args() {
-                            Ok(args) => Event::Signal(AccessRequestInfo {
-                                id: args.request.id,
-                                pid: args.request.pid,
-                                path: args.request.path,
-                                app_name: args.request.app_name,
-                                operation: args.request.operation,
-                            }),
+                            Ok(args) => Event::Signal(args.request),
                             Err(e) => {
                                 log::error!("Failed to parse signal args: {}", e);
                                 // Return a dummy that we'll skip
@@ -208,7 +193,7 @@ pub fn app() -> Element {
     }
 }
 
-fn render_request(req: AccessRequestInfo, dbus_tx: Coroutine<DbusAction>) -> Element {
+fn render_request(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction>) -> Element {
     let req_id_approve = req.id.clone();
     let req_id_deny = req.id.clone();
     let dbus_tx_approve = dbus_tx;

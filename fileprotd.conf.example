@@ -1,7 +1,7 @@
 #
 # fileprotd configuration file
 #
-#
+
 
 # Path to the GUI binary.
 # Used for D-Bus peer verification to ensure only the legitimate GUI can
@@ -84,7 +84,8 @@ mountpoint = "/mnt/protected"
 #gid = "1000"
 
 
-
+# Another example mount section.
+#
 [[mount]]
 disabled = true # This mount is disabled
 name = "another_protected"
