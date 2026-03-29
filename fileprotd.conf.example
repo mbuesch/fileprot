@@ -14,6 +14,23 @@ gui_binary_path = "/opt/fileprot/bin/fileprot"
 #
 request_timeout_secs = 120
 
+# How long (in seconds) to remember an approval for a specific process without
+# prompting again. The cached approval is bound to the PID, UID, executable
+# path, and process start time, so PID reuse cannot bypass it.
+# Set to 0 to disable approval caching entirely.
+# Default: 10
+#
+#approval_ttl_secs = 10
+
+# When true (the default), a cached approval is coupled to the exact process
+# that obtained it: PID, UID, executable path, and process start time must all
+# match before the cached approval is reused.
+# When false, any process may reuse a recently-granted approval within the TTL
+# window. Only disable this if you fully trust all processes on the system.
+# Default: true
+#
+#couple_approval_to_process = true
+
 # Base directory for all backing storage on the host filesystem.
 # Mount backing_dir values that are relative paths are resolved against this directory.
 #

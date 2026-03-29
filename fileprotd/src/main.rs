@@ -3,7 +3,8 @@ use anyhow::{self as ah, format_err as err};
 use clap::Parser;
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
 use fuser::{Config as FuserConfig, MountOption, SessionACL, spawn_mount2};
-use std::{path::PathBuf, sync::Arc};
+use nix::mount::{MntFlags, umount2};
+use std::{path::Path, path::PathBuf, sync::Arc};
 use tokio::{
     signal::{
         ctrl_c,
@@ -15,6 +16,14 @@ use tokio::{
 mod access_control;
 mod dbus_service;
 mod filesystem;
+
+/// Detach a FUSE mountpoint from the kernel's VFS using a lazy unmount.
+/// On success the mountpoint is immediately invisible to new callers;
+/// the FUSE session thread will clean up its file descriptor on its own.
+fn try_detach_mount(mountpoint: &Path) -> ah::Result<()> {
+    umount2(mountpoint, MntFlags::MNT_DETACH)
+        .map_err(|e| err!("Failed to unmount '{}': {}", mountpoint.display(), e))
+}
 
 /// Command-line arguments for fileprotd.
 #[derive(Debug, Parser)]
@@ -66,9 +75,16 @@ async fn main() -> ah::Result<()> {
     log::info!("D-Bus service started on system bus");
 
     // Create the shared access controller.
+    let coupling = if config.couple_approval_to_process() {
+        access_control::ApprovalCoupling::CoupledToProcess
+    } else {
+        access_control::ApprovalCoupling::Uncoupled
+    };
     let access_controller = Arc::new(access_control::AccessController::new(
         request_tx,
         config.request_timeout(),
+        config.approval_ttl(),
+        coupling,
     ));
 
     // Mount FUSE filesystems.
@@ -94,11 +110,34 @@ async fn main() -> ah::Result<()> {
         }
 
         // Validate that the mount point exists.
-        if !mount_cfg.mountpoint().exists() {
-            return Err(err!(
-                "Mount point does not exist: {}",
-                mount_cfg.mountpoint().display()
-            ));
+        match mount_cfg.mountpoint().try_exists() {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(err!(
+                    "Mount point does not exist: {}",
+                    mount_cfg.mountpoint().display()
+                ));
+            }
+            Err(e) => {
+                // ENOTCONN means there is a stale FUSE mount left over from a
+                // previous daemon run (e.g. after a crash or SIGKILL). The
+                // kernel still has the mountpoint in the VFS table but the
+                // FUSE endpoint is gone, so every stat() returns ENOTCONN.
+                // Try to detach it so we can mount cleanly.
+                if e.raw_os_error() == Some(nix::errno::Errno::ENOTCONN as i32) {
+                    log::warn!(
+                        "Stale FUSE mount detected at '{}' (ENOTCONN), attempting cleanup.",
+                        mount_cfg.mountpoint().display()
+                    );
+                    try_detach_mount(mount_cfg.mountpoint())?;
+                } else {
+                    return Err(err!(
+                        "Mount point is not accessible: {} ({})",
+                        mount_cfg.mountpoint().display(),
+                        e
+                    ));
+                }
+            }
         }
         if !mount_cfg.mountpoint().is_dir() {
             return Err(err!(
@@ -135,7 +174,11 @@ async fn main() -> ah::Result<()> {
 
         match spawn_mount2(fs, mount_cfg.mountpoint(), &fuser_config) {
             Ok(session) => {
-                sessions.push((mount_cfg.name().to_string(), session));
+                sessions.push((
+                    mount_cfg.name().to_string(),
+                    mount_cfg.mountpoint().to_path_buf(),
+                    session,
+                ));
                 log::info!("Mount '{}' active and registered", mount_cfg.name());
             }
             Err(e) => {
@@ -158,9 +201,14 @@ async fn main() -> ah::Result<()> {
         }
     }
 
-    // Drop sessions to unmount FUSE filesystems.
-    for (name, session) in sessions {
-        log::info!("Unmounting '{}'", name);
+    // Unmount FUSE filesystems.
+    for (name, mountpoint, session) in sessions {
+        log::info!("Unmounting '{}'...", name);
+        match try_detach_mount(&mountpoint) {
+            Ok(()) => log::info!("Unmounted '{}'", name),
+            Err(e) => log::warn!("Failed to unmount '{}': {}", name, e),
+        }
+        // Drop the session handle to join the FUSE background thread.
         drop(session);
     }
 

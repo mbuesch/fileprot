@@ -17,4 +17,5 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "si
 log = { workspace = true }
 env_logger = { workspace = true }
 libc = { workspace = true }
+nix = { workspace = true }
 clap = { version = "4", features = ["derive"] }

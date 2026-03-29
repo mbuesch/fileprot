@@ -1338,6 +1338,7 @@ dependencies = [
  "fuser",
  "libc",
  "log",
+ "nix 0.31.2",
  "tokio",
  "zbus",
 ]

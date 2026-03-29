@@ -43,6 +43,20 @@ pub struct Config {
     #[serde(default = "default_request_timeout_secs")]
     request_timeout_secs: u64,
 
+    /// How long (in seconds) to remember an approval for a specific process
+    /// without prompting again. The approval is bound to the PID, UID,
+    /// executable path, and process start time, so PID reuse cannot bypass it.
+    /// Set to 0 to disable approval caching entirely. Defaults to 10 seconds.
+    #[serde(default = "default_approval_ttl_secs")]
+    approval_ttl_secs: u64,
+
+    /// When true (the default), a cached approval is coupled to the exact
+    /// process that obtained it: PID, UID, executable path, and start time
+    /// must all match. When false, any process may reuse a recently-granted
+    /// approval within the TTL window.
+    #[serde(default = "default_couple_approval_to_process")]
+    couple_approval_to_process: bool,
+
     /// Base directory for all backing storage on the host filesystem.
     /// Mount backing_dir paths that are relative are resolved against this
     /// directory. Defaults to /opt/fileprot/var/lib/fileprot-backing.
@@ -61,6 +75,14 @@ impl Config {
 
     pub fn request_timeout(&self) -> Duration {
         Duration::from_secs(self.request_timeout_secs)
+    }
+
+    pub fn approval_ttl(&self) -> Duration {
+        Duration::from_secs(self.approval_ttl_secs)
+    }
+
+    pub fn couple_approval_to_process(&self) -> bool {
+        self.couple_approval_to_process
     }
 
     pub fn mounts(&self) -> &[MountConfig] {
@@ -140,6 +162,14 @@ fn default_gui_binary_path() -> PathBuf {
 
 fn default_request_timeout_secs() -> u64 {
     30
+}
+
+fn default_approval_ttl_secs() -> u64 {
+    10
+}
+
+fn default_couple_approval_to_process() -> bool {
+    true
 }
 
 fn default_backing_base_dir() -> PathBuf {

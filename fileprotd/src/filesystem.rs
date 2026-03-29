@@ -213,6 +213,7 @@ impl ProtectedFilesystem {
         operation: Operation,
     ) -> Result<bool, Errno> {
         let pid = req.pid();
+        let uid = req.uid();
         let app_name = resolve_app_name(pid).map_err(|_| Errno::EIO)?;
         let rel_path_str = rel_path.to_str().ok_or(Errno::EINVAL)?;
         let display_path = format!("[{}]/{}", self.mount_name, rel_path_str);
@@ -227,7 +228,7 @@ impl ProtectedFilesystem {
 
         match self
             .access_control
-            .request_access(pid, display_path, app_name, operation)
+            .request_access(pid, uid, display_path, app_name, operation)
         {
             Ok(approved) => {
                 log::info!("Access {}", if approved { "APPROVED" } else { "DENIED" });

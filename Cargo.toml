@@ -21,7 +21,7 @@ gtk = "0.18"
 image = { version = "0.25", default-features = false, features = ["png"] }
 libc = "0.2"
 log = "0.4"
-nix = { version = "0.31", default-features = false, features = ["user"] }
+nix = { version = "0.31", default-features = false, features = ["mount", "user"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", default-features = false }
 toml = "1.1"
