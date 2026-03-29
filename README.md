@@ -1,0 +1,73 @@
+# fileprot
+
+Simple file protection utility for Linux.
+
+fileprot mounts one or more FUSE filesystems that intercept every file access.
+When an application tries to read, write, create, delete, rename, change attributes of, or make a directory in a protected mount, the operation is blocked until the user explicitly approves or rejects it through a desktop tray application.
+
+## Components
+
+| Binary | Purpose |
+|--------|---------|
+| `fileprotd` | FUSE daemon, runs as root, managed by systemd |
+| `fileprot` | Desktop tray GUI for approving/rejecting requests |
+
+## How It Works
+
+1. `fileprotd` mounts one or more FUSE filesystems at configured mountpoints.
+1. Files inside those mounts are stored in a backing directory on the host filesystem.
+   The directory hierarchy mirrors the FUSE mount one-to-one.
+   The backing directory is protected by standard Linux permissions.
+   Only root can access it.
+1. When a process accesses a file (read, write, create, delete, rename, mkdir, setattr), the FUSE driver blocks the operation and sends a request to the daemon.
+1. The daemon forwards the request over D-Bus to the `fileprot` GUI.
+1. The GUI shows the requesting process's PID, executable name, file path, and operation type.
+1. The user clicks Approve or Reject. The FUSE operation resumes or fails accordingly.
+
+Listing directory contents (`readdir`) does not require approval.
+
+### Approval Caching
+
+To avoid repeated prompts for the same process, the daemon can cache approvals.
+A cached approval is keyed on the process's PID, UID, executable path, and start time read from `/proc/<pid>/stat`.
+This prevents PID reuse from bypassing the cache.
+Caching behavior is configurable and it is also possible to disable caching entirely.
+
+### D-Bus Communication
+
+The daemon exposes the `ch.bues.fileprot.AccessControl` interface on the system bus at bus name `ch.bues.fileprot.Daemon`, object path `/ch/bues/fileprot/Daemon`.
+The GUI fetches outstanding requests and approves or rejects them. 
+
+Before processing a response, the daemon verifies that the calling peer's executable matches the configured `gui_binary_path`, so only the legitimate `fileprot` binary can approve or reject requests.
+
+## Prerequisites
+
+## Installation
+
+See [INSTALL.md](INSTALL.md) for the full step-by-step installation guide.
+
+### Running the GUI
+
+Run the GUI tray application as your desktop user:
+
+```bash
+/opt/fileprot/bin/fileprot
+```
+
+The GUI will appear as a tray icon. When an application tries to access a
+protected file, a request will appear in the GUI window showing:
+
+- **PID** - process ID of the requesting application
+- **File path** - the protected file being accessed
+- **Application** - the executable path of the requesting application
+- **Operation** - read, write, create, or delete
+
+Click **Approve** to allow the operation or **Deny** to block it.
+
+If no response is given within the configured timeout (default: 30 seconds),
+the request is automatically denied.
+
+## Configuration
+
+The configuration file is at `/opt/fileprot/etc/fileprot/fileprotd.conf`.
+See [fileprotd.conf.example](fileprotd.conf.example) for the full annotated example.
