@@ -43,6 +43,20 @@ mountpoint = "/mnt/protected"
 #
 #backing_dir = "protected"
 
+# uid: Owner user for the mounted filesystem.
+# Accepts a numeric uid or a user name string.
+# Defaults to 0 (root) if not set.
+#
+#uid = "myuser"
+#uid = "1000"
+
+# gid: Owner group for the mounted filesystem.
+# Accepts a numeric gid or a group name string.
+# Defaults to 0 (root) if not set.
+#
+#gid = "mygroup"
+#gid = "1000"
+
 
 
 [[mount]]

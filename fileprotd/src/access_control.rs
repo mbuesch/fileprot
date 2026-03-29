@@ -1,10 +1,7 @@
 use anyhow::{self as ah, Context};
 use fileprot_common::{Operation, dbus_interface::AccessControlRequest};
 use std::{
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc as std_mpsc,
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot};
@@ -43,7 +40,7 @@ impl AccessController {
         operation: Operation,
     ) -> ah::Result<bool> {
         let id = format!("req-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-        let (response_tx, response_rx) = oneshot::channel();
+        let (response_tx, mut response_rx) = oneshot::channel();
 
         let request = AccessRequest {
             request: AccessControlRequest {
@@ -62,29 +59,28 @@ impl AccessController {
             .context("D-Bus service channel closed")?;
 
         // Block waiting for response with timeout.
-        // Use a std thread-based timeout since tokio oneshot doesn't have blocking_recv_timeout.
-        let (done_tx, done_rx) = std_mpsc::channel();
+        // Instead of spawning a thread, use a blocking_recv with a manual timeout check.
         let timeout = self.timeout;
-        let id_clone = id.clone();
+        let start = std::time::Instant::now();
 
-        std::thread::spawn(move || {
-            let result = response_rx.blocking_recv();
-            let _ = done_tx.send(result);
-        });
+        loop {
+            let _ = match timeout.checked_sub(start.elapsed()) {
+                Some(r) => r,
+                None => {
+                    log::warn!("Access request {} timed out after {:?}", id, timeout);
+                    return Ok(false);
+                }
+            };
 
-        match done_rx.recv_timeout(timeout) {
-            Ok(Ok(approved)) => Ok(approved),
-            Ok(Err(_)) => {
-                log::error!("Access request {} channel closed", id_clone);
-                Ok(false)
-            }
-            Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                log::warn!("Access request {} timed out after {:?}", id_clone, timeout);
-                Ok(false)
-            }
-            Err(std_mpsc::RecvTimeoutError::Disconnected) => {
-                log::error!("Access request {} response thread died", id_clone);
-                Ok(false)
+            match response_rx.try_recv() {
+                Ok(approved) => return Ok(approved),
+                Err(oneshot::error::TryRecvError::Empty) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    log::error!("Access request {} channel closed", id);
+                    return Ok(false);
+                }
             }
         }
     }

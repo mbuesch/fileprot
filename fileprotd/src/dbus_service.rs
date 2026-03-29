@@ -5,6 +5,15 @@ use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use zbus::{Connection, connection, interface, object_server::SignalEmitter};
 
+/// Whether to verify the identity of the GUI peer on D-Bus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerVerification {
+    /// Verify that the calling binary matches the configured GUI path.
+    Enabled,
+    /// Skip peer verification (for testing only).
+    Disabled,
+}
+
 /// A pending request waiting for user response.
 struct PendingEntry {
     request: AccessControlRequest,
@@ -15,6 +24,7 @@ struct PendingEntry {
 pub struct AccessControlService {
     pending: Arc<Mutex<HashMap<String, PendingEntry>>>,
     gui_binary_path: PathBuf,
+    peer_verification: PeerVerification,
 }
 
 #[interface(name = "ch.bues.fileprot.AccessControl")]
@@ -34,7 +44,9 @@ impl AccessControlService {
         approved: bool,
     ) -> zbus::fdo::Result<bool> {
         // Verify the caller is a legitimate fileprot GUI.
-        if let Err(e) = self.verify_peer(&header, connection).await {
+        if self.peer_verification == PeerVerification::Enabled
+            && let Err(e) = self.verify_peer(&header, connection).await
+        {
             log::warn!("Peer verification failed: {}", e);
             return Err(zbus::fdo::Error::AccessDenied(format!(
                 "Peer verification failed: {}",
@@ -68,10 +80,11 @@ impl AccessControlService {
 }
 
 impl AccessControlService {
-    fn new(gui_binary_path: PathBuf) -> Self {
+    fn new(gui_binary_path: PathBuf, peer_verification: PeerVerification) -> Self {
         AccessControlService {
             pending: Arc::new(Mutex::new(HashMap::new())),
             gui_binary_path,
+            peer_verification,
         }
     }
 
@@ -117,8 +130,9 @@ impl AccessControlService {
 pub async fn start_dbus_service(
     mut request_rx: mpsc::Receiver<AccessRequest>,
     gui_binary_path: PathBuf,
+    peer_verification: PeerVerification,
 ) -> ah::Result<Connection> {
-    let service = AccessControlService::new(gui_binary_path);
+    let service = AccessControlService::new(gui_binary_path, peer_verification);
     let pending = service.pending.clone();
 
     let connection = connection::Builder::system()

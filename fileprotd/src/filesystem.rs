@@ -46,6 +46,10 @@ pub struct ProtectedFilesystem {
     mount_name: String,
     /// Absolute path to the backing directory.
     backing_dir: PathBuf,
+    /// uid that owns all entries in the virtual filesystem.
+    mount_uid: u32,
+    /// gid that owns all entries in the virtual filesystem.
+    mount_gid: u32,
     /// Inode table: inode -> data.
     inodes: RwLock<HashMap<u64, InodeData>>,
     /// Reverse lookup: relative path -> inode number.
@@ -64,6 +68,8 @@ impl ProtectedFilesystem {
     pub fn new(
         mount_name: String,
         backing_dir: PathBuf,
+        mount_uid: u32,
+        mount_gid: u32,
         access_control: Arc<AccessController>,
     ) -> Self {
         let mut inodes = HashMap::new();
@@ -82,6 +88,8 @@ impl ProtectedFilesystem {
         ProtectedFilesystem {
             mount_name,
             backing_dir,
+            mount_uid,
+            mount_gid,
             inodes: RwLock::new(inodes),
             path_to_inode: RwLock::new(path_to_inode),
             next_inode: AtomicU64::new(ROOT_INODE.0 + 1),
@@ -167,8 +175,8 @@ impl ProtectedFilesystem {
             kind,
             perm: (metadata.mode() & 0o7777) as u16,
             nlink: metadata.nlink() as u32,
-            uid: metadata.uid(),
-            gid: metadata.gid(),
+            uid: self.mount_uid,
+            gid: self.mount_gid,
             rdev: metadata.rdev() as u32,
             blksize: metadata.blksize() as u32,
             flags: 0,
