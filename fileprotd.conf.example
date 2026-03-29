@@ -31,6 +31,15 @@ request_timeout_secs = 120
 #
 #couple_approval_to_process = true
 
+# When true (the default), each access that hits a cached approval resets the
+# approval TTL timer, keeping the approval alive as long as the process keeps
+# accessing files. When false, the TTL is fixed from the time the user
+# originally granted approval and will expire even if the process is actively
+# reading files.
+# Default: true
+#
+#renew_approval_on_access = true
+
 # Base directory for all backing storage on the host filesystem.
 # Mount backing_dir values that are relative paths are resolved against this directory.
 #

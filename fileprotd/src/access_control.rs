@@ -72,8 +72,20 @@ impl ProcessIdentity {
     }
 }
 
+/// Controls whether a cache hit resets the approval TTL timer.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ApprovalRenewal {
+    /// Each cache hit resets the TTL timer, keeping the approval alive as long
+    /// as the process keeps accessing files.
+    RenewOnAccess,
+    /// The TTL is fixed from the time the user originally granted approval.
+    /// It will expire even if the process is actively accessing files.
+    NoRenewal,
+}
+
 /// Controls whether a cached approval is tied to the specific process that
 /// obtained it or is reusable by any process.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ApprovalCoupling {
     /// The cached approval is locked to the exact process (PID, UID, exe path,
     /// start time). No other process can benefit from it.
@@ -84,6 +96,7 @@ pub enum ApprovalCoupling {
 
 /// Storage for the approval cache, keyed on whether process-identity coupling
 /// is enabled.
+#[derive(Debug, Clone)]
 enum CacheState {
     /// Each approved process is tracked individually by its full identity.
     /// Only that exact process can reuse the cached approval.
@@ -101,6 +114,7 @@ enum CachedApproval {
 
 /// Handle held by the FUSE filesystem to send access requests.
 /// Bridges synchronous FUSE threads to the async D-Bus service.
+#[derive(Debug)]
 pub struct AccessController {
     request_tx: mpsc::Sender<AccessRequest>,
     timeout: Duration,
@@ -108,6 +122,8 @@ pub struct AccessController {
     /// How long to remember an approval.
     /// A value of `Duration::ZERO` disables caching entirely.
     approval_ttl: Duration,
+    /// Whether cache hits reset the TTL timer.
+    renewal: ApprovalRenewal,
     /// Approval cache, mode determined at construction time.
     approval_cache: Mutex<CacheState>,
 }
@@ -118,6 +134,7 @@ impl AccessController {
         timeout: Duration,
         approval_ttl: Duration,
         coupling: ApprovalCoupling,
+        renewal: ApprovalRenewal,
     ) -> Self {
         let cache = match coupling {
             ApprovalCoupling::CoupledToProcess => CacheState::Coupled(HashMap::new()),
@@ -128,6 +145,7 @@ impl AccessController {
             timeout,
             next_id: AtomicU64::new(1),
             approval_ttl,
+            renewal,
             approval_cache: Mutex::new(cache),
         }
     }
@@ -145,10 +163,18 @@ impl AccessController {
                 map.retain(|_, approved_at| approved_at.elapsed() < self.approval_ttl);
 
                 // Check if the given identity has a valid cached approval.
-                if identity.is_some_and(|id| {
+                let approved = identity.is_some_and(|id| {
                     map.get(id)
                         .is_some_and(|approved_at| approved_at.elapsed() < self.approval_ttl)
-                }) {
+                });
+                if approved {
+                    // Renew the TTL on each access if the option is set.
+                    if self.renewal == ApprovalRenewal::RenewOnAccess
+                        && let Some(id) = identity
+                        && let Some(approved_at) = map.get_mut(id)
+                    {
+                        *approved_at = Instant::now();
+                    }
                     CachedApproval::Approved
                 } else {
                     CachedApproval::NotApproved
@@ -156,7 +182,13 @@ impl AccessController {
             }
             CacheState::Uncoupled(last) => {
                 // Check if the global approval is still valid.
-                if last.is_some_and(|approved_at| approved_at.elapsed() < self.approval_ttl) {
+                let approved =
+                    last.is_some_and(|approved_at| approved_at.elapsed() < self.approval_ttl);
+                if approved {
+                    // Renew the TTL on each access if the option is set.
+                    if self.renewal == ApprovalRenewal::RenewOnAccess {
+                        *last = Some(Instant::now());
+                    }
                     CachedApproval::Approved
                 } else {
                     CachedApproval::NotApproved

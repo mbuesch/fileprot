@@ -1,10 +1,11 @@
 use crate::access_control::AccessController;
 use fileprot_common::{Operation, resolve_app_name};
 use fuser::{
-    BsdFileFlags, Errno, FileAttr, FileHandle as FuseFileHandle, FileType, Filesystem, FopenFlags,
-    Generation, INodeNo, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
-    ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
-    WriteFlags,
+    AccessFlags, BsdFileFlags, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
+    FileType, Filesystem, FopenFlags, Generation, INodeNo, IoctlFlags, LockOwner, OpenAccMode,
+    OpenFlags, PollEvents, PollFlags, PollNotifier, RenameFlags, ReplyAttr, ReplyBmap, ReplyCreate,
+    ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyIoctl, ReplyLock,
+    ReplyLseek, ReplyOpen, ReplyPoll, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use std::{
     collections::HashMap,
@@ -923,5 +924,216 @@ impl Filesystem for ProtectedFilesystem {
                 reply.error(Errno::from(e));
             }
         }
+    }
+
+    fn getxattr(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _name: &OsStr,
+        _size: u32,
+        reply: ReplyXattr,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn listxattr(&self, _req: &Request, _ino: INodeNo, _size: u32, reply: ReplyXattr) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+        let rel_path = match self.get_rel_path(ino) {
+            Some(p) => p,
+            None => {
+                reply.error(Errno::ENOENT);
+                return;
+            }
+        };
+        let backing = self.backing_path(&rel_path);
+        match fs::read_link(&backing) {
+            Ok(target) => reply.data(target.as_os_str().as_bytes()),
+            Err(e) => reply.error(Errno::from(e)),
+        }
+    }
+
+    fn mknod(
+        &self,
+        _req: &Request,
+        _parent: INodeNo,
+        _name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        _rdev: u32,
+        reply: ReplyEntry,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn symlink(
+        &self,
+        _req: &Request,
+        _parent: INodeNo,
+        _link_name: &OsStr,
+        _target: &Path,
+        reply: ReplyEntry,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn link(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _newparent: INodeNo,
+        _newname: &OsStr,
+        reply: ReplyEntry,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn setxattr(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _name: &OsStr,
+        _value: &[u8],
+        _flags: i32,
+        _position: u32,
+        reply: ReplyEmpty,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn removexattr(&self, _req: &Request, _ino: INodeNo, _name: &OsStr, reply: ReplyEmpty) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn access(&self, _req: &Request, _ino: INodeNo, _mask: AccessFlags, reply: ReplyEmpty) {
+        reply.ok();
+    }
+
+    fn getlk(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FuseFileHandle,
+        _lock_owner: LockOwner,
+        _start: u64,
+        _end: u64,
+        _typ: i32,
+        _pid: u32,
+        reply: ReplyLock,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn setlk(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FuseFileHandle,
+        _lock_owner: LockOwner,
+        _start: u64,
+        _end: u64,
+        _typ: i32,
+        _pid: u32,
+        _sleep: bool,
+        reply: ReplyEmpty,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn bmap(&self, _req: &Request, _ino: INodeNo, _blocksize: u32, _idx: u64, reply: ReplyBmap) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn ioctl(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FuseFileHandle,
+        _flags: IoctlFlags,
+        _cmd: u32,
+        _in_data: &[u8],
+        _out_size: u32,
+        reply: ReplyIoctl,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn poll(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FuseFileHandle,
+        _ph: PollNotifier,
+        _events: PollEvents,
+        _flags: PollFlags,
+        reply: ReplyPoll,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn fallocate(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FuseFileHandle,
+        _offset: u64,
+        _length: u64,
+        _mode: i32,
+        reply: ReplyEmpty,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn lseek(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FuseFileHandle,
+        _offset: i64,
+        _whence: i32,
+        reply: ReplyLseek,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn copy_file_range(
+        &self,
+        _req: &Request,
+        _ino_in: INodeNo,
+        _fh_in: FuseFileHandle,
+        _offset_in: u64,
+        _ino_out: INodeNo,
+        _fh_out: FuseFileHandle,
+        _offset_out: u64,
+        _len: u64,
+        _flags: CopyFileRangeFlags,
+        reply: ReplyWrite,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn readdirplus(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FuseFileHandle,
+        _offset: u64,
+        reply: ReplyDirectoryPlus,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
+    }
+
+    fn fsyncdir(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FuseFileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        reply.error(Errno::EOPNOTSUPP);
     }
 }

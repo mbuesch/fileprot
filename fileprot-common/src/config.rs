@@ -57,6 +57,13 @@ pub struct Config {
     #[serde(default = "default_couple_approval_to_process")]
     couple_approval_to_process: bool,
 
+    /// When true (the default), each access that hits a cached approval
+    /// resets the approval TTL timer, effectively keeping the approval alive as
+    /// long as the process keeps accessing files. When false, the TTL is fixed
+    /// from the time the user originally granted it.
+    #[serde(default = "default_renew_approval_on_access")]
+    renew_approval_on_access: bool,
+
     /// Base directory for all backing storage on the host filesystem.
     /// Mount backing_dir paths that are relative are resolved against this
     /// directory. Defaults to /opt/fileprot/var/lib/fileprot-backing.
@@ -83,6 +90,10 @@ impl Config {
 
     pub fn couple_approval_to_process(&self) -> bool {
         self.couple_approval_to_process
+    }
+
+    pub fn renew_approval_on_access(&self) -> bool {
+        self.renew_approval_on_access
     }
 
     pub fn mounts(&self) -> &[MountConfig] {
@@ -169,6 +180,10 @@ fn default_approval_ttl_secs() -> u64 {
 }
 
 fn default_couple_approval_to_process() -> bool {
+    true
+}
+
+fn default_renew_approval_on_access() -> bool {
     true
 }
 

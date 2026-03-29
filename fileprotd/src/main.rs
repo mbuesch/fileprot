@@ -80,11 +80,17 @@ async fn main() -> ah::Result<()> {
     } else {
         access_control::ApprovalCoupling::Uncoupled
     };
+    let renewal = if config.renew_approval_on_access() {
+        access_control::ApprovalRenewal::RenewOnAccess
+    } else {
+        access_control::ApprovalRenewal::NoRenewal
+    };
     let access_controller = Arc::new(access_control::AccessController::new(
         request_tx,
         config.request_timeout(),
         config.approval_ttl(),
         coupling,
+        renewal,
     ));
 
     // Mount FUSE filesystems.
