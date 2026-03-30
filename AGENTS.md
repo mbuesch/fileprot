@@ -39,6 +39,7 @@
 - When unsure, ask rather than guess.
 - Never use the character `—`; use `-` instead.
 - Use `vec![]` instead of `Vec::new()`.
+- When cloning an `Arc`, use `Arc::clone(&arc)` instead of `arc.clone()`.
 - When using multiple items from the same crate, prefer a single `use` statement with curly braces.
 - `mod` statements shall come after `use` statements.
 - `use` statements shall be at the top of the file.

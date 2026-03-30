@@ -164,7 +164,7 @@ async fn main() -> ah::Result<()> {
             mount_cfg.backing_dir().to_path_buf(),
             mount_cfg.uid(),
             mount_cfg.gid(),
-            access_controller.clone(),
+            Arc::clone(&access_controller),
         );
 
         let mut fuser_config = FuserConfig::default();

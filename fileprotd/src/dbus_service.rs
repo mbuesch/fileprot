@@ -133,7 +133,7 @@ pub async fn start_dbus_service(
     peer_verification: PeerVerification,
 ) -> ah::Result<Connection> {
     let service = AccessControlService::new(gui_binary_path, peer_verification);
-    let pending = service.pending.clone();
+    let pending = Arc::clone(&service.pending);
 
     let connection = connection::Builder::system()
         .context("failed to connect to system bus")?

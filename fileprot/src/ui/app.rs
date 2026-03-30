@@ -41,7 +41,7 @@ fn raise_window(w: &tao::window::Window) {
 /// Coroutine that polls for show signals from the tray icon.
 fn use_tray_watcher(win: Arc<tao::window::Window>) {
     use_coroutine(move |_: UnboundedReceiver<()>| {
-        let win = win.clone();
+        let win = Arc::clone(&win);
         async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -60,7 +60,7 @@ fn use_dbus_handler(
     mut error: Signal<Option<String>>,
 ) -> Coroutine<DbusAction> {
     use_coroutine(move |mut rx: UnboundedReceiver<DbusAction>| {
-        let win = win.clone();
+        let win = Arc::clone(&win);
         async move {
             // Connect to daemon D-Bus service.
             let proxy = match connect().await {
@@ -108,7 +108,7 @@ fn use_dbus_handler(
                         match item {
                             Some(signal) => match signal.args() {
                                 Ok(args) => {
-                                    log::info!("New request: {:?}", args.request);
+                                    error.set(None);
                                     raise_window(&win);
                                     requests.write().push(args.request);
                                 }
@@ -132,13 +132,12 @@ fn use_dbus_handler(
                                     Ok(found) => {
                                         if !found {
                                             log::warn!(
-                                                "Request {} not found (may have timed out)",
-                                                request_id
+                                                "Request {request_id} not found (may have timed out)"
                                             );
                                         }
                                     }
                                     Err(e) => {
-                                        log::error!("Failed to respond to {}: {e}", request_id);
+                                        log::error!("Failed to respond to {request_id}: {e}");
                                         error.set(Some("Failed to respond to request".to_string()));
                                     }
                                 }
@@ -165,8 +164,8 @@ pub fn App() -> Element {
     let requests = use_signal(Vec::<AccessControlRequest>::new);
     let error_sig = use_signal(|| None::<String>);
 
-    let tao_window = window().window.clone();
-    use_tray_watcher(tao_window.clone());
+    let tao_window = Arc::clone(&window().window);
+    use_tray_watcher(Arc::clone(&tao_window));
     let dbus_coroutine = use_dbus_handler(tao_window, requests, error_sig);
 
     let error = error_sig.read().clone();
