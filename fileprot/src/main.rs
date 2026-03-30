@@ -68,7 +68,8 @@ fn main() {
                     WindowBuilder::new()
                         .with_title("fileprot - Access Requests")
                         .with_inner_size(LogicalSize::new(700.0, 500.0))
-                        .with_window_icon(load_window_icon()),
+                        .with_window_icon(load_window_icon())
+                        .with_visible(false),
                 )
                 .with_close_behaviour(WindowCloseBehaviour::WindowHides),
         )
