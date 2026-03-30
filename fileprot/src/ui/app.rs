@@ -6,9 +6,9 @@ use base64::Engine;
 use dioxus::desktop::{tao, window};
 use dioxus::prelude::*;
 use fileprot_common::dbus_interface::AccessControlRequest;
-use futures_lite::StreamExt;
 use std::sync::Arc;
 use std::{pin::pin, sync::LazyLock, time::Duration};
+use tokio_stream::StreamExt;
 
 const CSS: &str = include_str!("style.css");
 const ICON_RAW_2_PNG: &[u8] = include_bytes!("../../../assets/icon_raw_2.png");
@@ -57,7 +57,7 @@ fn use_tray_watcher(win: Arc<tao::window::Window>) {
 fn use_dbus_handler(
     win: Arc<tao::window::Window>,
     mut requests: Signal<Vec<AccessControlRequest>>,
-    mut connection_status: Signal<String>,
+    mut error: Signal<Option<String>>,
 ) -> Coroutine<DbusAction> {
     use_coroutine(move |mut rx: UnboundedReceiver<DbusAction>| {
         let win = win.clone();
@@ -65,13 +65,12 @@ fn use_dbus_handler(
             // Connect to daemon D-Bus service.
             let proxy = match connect().await {
                 Ok(p) => {
-                    connection_status.set("Connected".to_string());
+                    error.set(None);
                     p
                 }
                 Err(e) => {
-                    let msg = format!("Failed to connect to daemon: {}", e);
-                    log::error!("{}", msg);
-                    connection_status.set(msg);
+                    log::error!("Failed to connect to daemon: {e}");
+                    error.set(Some("Failed to connect to daemon".to_string()));
                     return;
                 }
             };
@@ -86,7 +85,8 @@ fn use_dbus_handler(
                     }
                 }
                 Err(e) => {
-                    log::warn!("Failed to get pending requests: {}", e);
+                    log::warn!("Failed to get pending requests: {e}");
+                    error.set(Some("Failed to load pending requests".to_string()));
                 }
             }
 
@@ -94,80 +94,65 @@ fn use_dbus_handler(
             let signal_stream = match proxy.receive_new_request().await {
                 Ok(s) => s,
                 Err(e) => {
-                    log::error!("Failed to subscribe to signals: {}", e);
-                    connection_status.set(format!("Signal subscription failed: {}", e));
+                    log::error!("Failed to subscribe to signals: {e}");
+                    error.set(Some("Signal subscription failed".to_string()));
                     return;
                 }
             };
-
             let mut signal_stream = pin!(signal_stream);
 
             // Process both incoming signals and outgoing responses using select-style loop.
             loop {
-                enum Event {
-                    Signal(AccessControlRequest),
-                    Action(DbusAction),
-                    SignalStreamEnded,
-                    ActionStreamEnded,
-                }
-
-                let event = futures_lite::future::or(
-                    async {
-                        match signal_stream.next().await {
+                tokio::select! {
+                    item = signal_stream.next() => {
+                        match item {
                             Some(signal) => match signal.args() {
-                                Ok(args) => Event::Signal(args.request),
+                                Ok(args) => {
+                                    log::info!("New request: {:?}", args.request);
+                                    raise_window(&win);
+                                    requests.write().push(args.request);
+                                }
                                 Err(e) => {
-                                    log::error!("Failed to parse signal args: {}", e);
-                                    Event::SignalStreamEnded
+                                    log::error!("Failed to parse signal args: {e}");
+                                    error.set(Some("Failed to parse signal args".to_string()));
+                                    break;
                                 }
                             },
-                            None => Event::SignalStreamEnded,
+                            None => {
+                                log::warn!("D-Bus signal stream ended");
+                                error.set(Some("Lost connection to daemon".to_string()));
+                                break;
+                            }
                         }
-                    },
-                    async {
-                        match rx.next().await {
-                            Some(action) => Event::Action(action),
-                            None => Event::ActionStreamEnded,
-                        }
-                    },
-                )
-                .await;
-
-                match event {
-                    Event::Signal(info) => {
-                        log::info!("New request: {:?}", info);
-                        raise_window(&win);
-                        requests.write().push(info);
                     }
-                    Event::Action(DbusAction::Respond {
-                        request_id,
-                        approved,
-                    }) => {
-                        match proxy.respond_to_request(&request_id, approved).await {
-                            Ok(found) => {
-                                if !found {
-                                    log::warn!(
-                                        "Request {} not found (may have timed out)",
-                                        request_id
-                                    );
+                    action = rx.next() => {
+                        match action {
+                            Some(DbusAction::Respond { request_id, approved }) => {
+                                match proxy.respond_to_request(&request_id, approved).await {
+                                    Ok(found) => {
+                                        if !found {
+                                            log::warn!(
+                                                "Request {} not found (may have timed out)",
+                                                request_id
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to respond to {}: {e}", request_id);
+                                        error.set(Some("Failed to respond to request".to_string()));
+                                    }
+                                }
+                                requests.write().retain(|r| r.id != request_id);
+                                if requests.read().is_empty() {
+                                    win.set_visible(false);
                                 }
                             }
-                            Err(e) => {
-                                log::error!("Failed to respond to {}: {}", request_id, e);
+                            None => {
+                                log::info!("Action channel closed");
+                                error.set(Some("Action channel closed".to_string()));
+                                break;
                             }
                         }
-                        requests.write().retain(|r| r.id != request_id);
-                        if requests.read().is_empty() {
-                            win.set_visible(false);
-                        }
-                    }
-                    Event::SignalStreamEnded => {
-                        log::warn!("D-Bus signal stream ended");
-                        break;
-                    }
-                    Event::ActionStreamEnded => {
-                        log::info!("Action channel closed");
-                        break;
                     }
                 }
             }
@@ -178,13 +163,13 @@ fn use_dbus_handler(
 #[component]
 pub fn App() -> Element {
     let requests = use_signal(Vec::<AccessControlRequest>::new);
-    let connection_status = use_signal(|| "Connecting...".to_string());
+    let error_sig = use_signal(|| None::<String>);
 
     let tao_window = window().window.clone();
     use_tray_watcher(tao_window.clone());
-    let dbus_coroutine = use_dbus_handler(tao_window, requests, connection_status);
+    let dbus_coroutine = use_dbus_handler(tao_window, requests, error_sig);
 
-    let status = connection_status.read().clone();
+    let error = error_sig.read().clone();
     let request_list = requests.read().clone();
 
     rsx! {
@@ -197,8 +182,10 @@ pub fn App() -> Element {
                     alt: "fileprot",
                 }
                 h1 { "fileprot" }
-                span { class: if status == "Connected" { "status connected" } else { "status" },
-                    "{status}"
+                if let Some(ref msg) = error {
+                    span { class: "status", "{msg}" }
+                } else {
+                    span { class: "status ok", "" }
                 }
             }
             if request_list.is_empty() {

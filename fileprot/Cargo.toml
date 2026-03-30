@@ -14,10 +14,10 @@ base64 = { workspace = true }
 dioxus = { workspace = true, features = ["desktop"] }
 env_logger = { workspace = true }
 fileprot-common = { workspace = true }
-futures-lite = { workspace = true }
 gtk = { workspace = true }
 image = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tokio-stream = { workspace = true }
 tray-icon = { workspace = true }
 zbus = { workspace = true }
