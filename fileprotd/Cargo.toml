@@ -10,12 +10,13 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-fileprot-common = { workspace = true }
-fuser = { workspace = true }
-zbus = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "signal"] }
-log = { workspace = true }
+clap = { workspace = true }
 env_logger = { workspace = true }
+fuser = { workspace = true }
 libc = { workspace = true }
+log = { workspace = true }
 nix = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true }
+zbus = { workspace = true }
+
+fileprot-common = { workspace = true }

@@ -1,3 +1,4 @@
+use clap::Parser;
 use dioxus::{
     LaunchBuilder,
     desktop::{Config as DesktopConfig, LogicalSize, WindowBuilder, WindowCloseBehaviour, tao},
@@ -14,6 +15,15 @@ mod ui;
 
 const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
 
+/// Command-line arguments for fileprot.
+#[derive(Debug, Parser)]
+#[command(author, version, about = "fileprot - File Protection Tray")]
+struct Args {
+    /// Start with the window visible instead of hidden
+    #[arg(long)]
+    visible: bool,
+}
+
 fn load_window_icon() -> Option<tao::window::Icon> {
     let img = image::load_from_memory(ICON_PNG)
         .map_err(|e| log::warn!("Failed to load window icon: {}", e))
@@ -27,6 +37,9 @@ fn load_window_icon() -> Option<tao::window::Icon> {
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Parse command-line arguments.
+    let args = Args::parse();
 
     // GTK must be initialized before creating tray icon on Linux.
     gtk::init().expect("Failed to initialize GTK");
@@ -69,7 +82,7 @@ fn main() {
                         .with_title("fileprot - Access Requests")
                         .with_inner_size(LogicalSize::new(700.0, 500.0))
                         .with_window_icon(load_window_icon())
-                        .with_visible(false),
+                        .with_visible(args.visible),
                 )
                 .with_close_behaviour(WindowCloseBehaviour::WindowHides),
         )
