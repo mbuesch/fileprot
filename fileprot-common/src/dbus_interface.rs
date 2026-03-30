@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use zbus::{proxy, zvariant::Type};
 
-#[derive(Debug, Clone, Type, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Type, Serialize, Deserialize)]
 pub struct AccessControlRequest {
     pub id: String,
     pub pid: u32,

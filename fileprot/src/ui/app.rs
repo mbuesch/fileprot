@@ -23,7 +23,8 @@ pub(crate) enum DbusAction {
     Respond { request_id: String, approved: bool },
 }
 
-pub fn app() -> Element {
+#[component]
+pub fn App() -> Element {
     let mut requests = use_signal(Vec::<AccessControlRequest>::new);
     let mut connection_status = use_signal(|| "Connecting...".to_string());
 
@@ -193,7 +194,7 @@ pub fn app() -> Element {
             if has_requests {
                 div { class: "request-list",
                     for req in request_list.iter() {
-                        {render_request(req.clone(), dbus_coroutine)}
+                        render_request { req: req.clone(), dbus_tx: dbus_coroutine }
                     }
                 }
             } else {

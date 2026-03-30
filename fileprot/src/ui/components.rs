@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
 use fileprot_common::dbus_interface::AccessControlRequest;
-
 use super::app::DbusAction;
 
+#[component]
 pub fn render_request(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction>) -> Element {
     let req_id_approve = req.id.clone();
     let req_id_deny = req.id.clone();

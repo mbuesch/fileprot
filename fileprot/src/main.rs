@@ -72,5 +72,5 @@ fn main() {
                 )
                 .with_close_behaviour(WindowCloseBehaviour::WindowHides),
         )
-        .launch(ui::app);
+        .launch(ui::App);
 }
