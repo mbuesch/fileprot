@@ -75,6 +75,14 @@ install_service()
         /etc/systemd/system/fileprotd.service
 }
 
+install_user_service()
+{
+    do_install \
+        -o root -g root -m 0644 \
+        "$basedir/systemd/fileprot.service" \
+        /usr/lib/systemd/user/fileprot.service
+}
+
 release="release"
 while [ $# -ge 1 ]; do
     case "$1" in
@@ -100,5 +108,6 @@ install_conf
 install_backing
 install_dbus
 install_service
+install_user_service
 do_systemctl daemon-reload
 start_service

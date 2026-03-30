@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Fileprot
+Comment=Fileprot tray application
+Exec=/opt/fileprot/bin/fileprot
+Icon=fileprot
+Terminal=false
+Categories=Utility;System;
+StartupNotify=false
