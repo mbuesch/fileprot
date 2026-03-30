@@ -1,15 +1,16 @@
-use crate::dbus_client::connect;
+use crate::{
+    dbus_client::connect,
+    ui::{components::RequestListEntry, tray::SHOW_REQUESTED},
+};
 use base64::Engine;
 use dioxus::desktop::{tao, window};
 use dioxus::prelude::*;
 use fileprot_common::dbus_interface::AccessControlRequest;
 use futures_lite::StreamExt;
+use std::sync::Arc;
 use std::{pin::pin, sync::LazyLock, time::Duration};
 
-use super::components::render_request;
-use super::tray::SHOW_REQUESTED;
-
-const CSS: &str = include_str!("../style.css");
+const CSS: &str = include_str!("style.css");
 const ICON_RAW_2_PNG: &[u8] = include_bytes!("../../../assets/icon_raw_2.png");
 
 static ICON_RAW_2_DATA_URI: LazyLock<String> = LazyLock::new(|| {
@@ -23,16 +24,24 @@ pub(crate) enum DbusAction {
     Respond { request_id: String, approved: bool },
 }
 
-#[component]
-pub fn App() -> Element {
-    let mut requests = use_signal(Vec::<AccessControlRequest>::new);
-    let mut connection_status = use_signal(|| "Connecting...".to_string());
+fn raise_window(w: &tao::window::Window) {
+    w.set_visible(true);
+    w.set_minimized(false);
+    if let Some(monitor) = w.current_monitor() {
+        let m_size = monitor.size();
+        let m_pos = monitor.position();
+        let w_size = w.outer_size();
+        let x = m_pos.x + (m_size.width as i32 - w_size.width as i32) / 2;
+        let y = m_pos.y + (m_size.height as i32 - w_size.height as i32) / 2;
+        w.set_outer_position(tao::dpi::PhysicalPosition::new(x, y));
+    }
+    w.set_focus();
+}
 
-    // Coroutine that polls for show/quit signals from the tray icon.
-    let tao_window = window().window.clone();
-    let tao_window_for_dbus = tao_window.clone();
+/// Coroutine that polls for show signals from the tray icon.
+fn use_tray_watcher(win: Arc<tao::window::Window>) {
     use_coroutine(move |_: UnboundedReceiver<()>| {
-        let win = tao_window.clone();
+        let win = win.clone();
         async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -42,24 +51,17 @@ pub fn App() -> Element {
             }
         }
     });
+}
 
-    // Coroutine that handles D-Bus communication.
-    let dbus_coroutine = use_coroutine(move |mut rx: UnboundedReceiver<DbusAction>| {
-        let win = tao_window_for_dbus.clone();
+/// Coroutine that handles all D-Bus communication with the daemon.
+fn use_dbus_handler(
+    win: Arc<tao::window::Window>,
+    mut requests: Signal<Vec<AccessControlRequest>>,
+    mut connection_status: Signal<String>,
+) -> Coroutine<DbusAction> {
+    use_coroutine(move |mut rx: UnboundedReceiver<DbusAction>| {
+        let win = win.clone();
         async move {
-            let raise_window = |w: &tao::window::Window| {
-                w.set_visible(true);
-                w.set_minimized(false);
-                if let Some(monitor) = w.current_monitor() {
-                    let m_size = monitor.size();
-                    let m_pos = monitor.position();
-                    let w_size = w.outer_size();
-                    let x = m_pos.x + (m_size.width as i32 - w_size.width as i32) / 2;
-                    let y = m_pos.y + (m_size.height as i32 - w_size.height as i32) / 2;
-                    w.set_outer_position(tao::dpi::PhysicalPosition::new(x, y));
-                }
-                w.set_focus();
-            };
             // Connect to daemon D-Bus service.
             let proxy = match connect().await {
                 Ok(p) => {
@@ -116,7 +118,6 @@ pub fn App() -> Element {
                                 Ok(args) => Event::Signal(args.request),
                                 Err(e) => {
                                     log::error!("Failed to parse signal args: {}", e);
-                                    // Return a dummy that we'll skip
                                     Event::SignalStreamEnded
                                 }
                             },
@@ -171,11 +172,20 @@ pub fn App() -> Element {
                 }
             }
         }
-    });
+    })
+}
+
+#[component]
+pub fn App() -> Element {
+    let requests = use_signal(Vec::<AccessControlRequest>::new);
+    let connection_status = use_signal(|| "Connecting...".to_string());
+
+    let tao_window = window().window.clone();
+    use_tray_watcher(tao_window.clone());
+    let dbus_coroutine = use_dbus_handler(tao_window, requests, connection_status);
 
     let status = connection_status.read().clone();
     let request_list = requests.read().clone();
-    let has_requests = !request_list.is_empty();
 
     rsx! {
         style { {CSS} }
@@ -191,17 +201,17 @@ pub fn App() -> Element {
                     "{status}"
                 }
             }
-            if has_requests {
-                div { class: "request-list",
-                    for req in request_list.iter() {
-                        render_request { req: req.clone(), dbus_tx: dbus_coroutine }
-                    }
-                }
-            } else {
+            if request_list.is_empty() {
                 div { class: "empty",
                     p { "No pending access requests." }
                     p { class: "hint",
                         "Requests will appear here when applications try to access protected files."
+                    }
+                }
+            } else {
+                div { class: "request-list",
+                    for req in request_list.iter() {
+                        RequestListEntry { req: req.clone(), dbus_tx: dbus_coroutine }
                     }
                 }
             }
