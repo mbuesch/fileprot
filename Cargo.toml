@@ -26,7 +26,7 @@ serde = { version = "1", features = [ "derive" ] }
 tokio = { version = "1", default-features = false, features = [ "rt-multi-thread", "time", "macros", "sync", "signal" ] }
 tokio-stream = "0.1"
 toml = "1.1"
-tray-icon = "0.21"
+tray-icon = "0.22"
 zbus = { version = "5.14", default-features = false, features = [ "tokio" ] }
 
 fileprot-common = { path = "./fileprot-common" }
