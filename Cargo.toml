@@ -17,8 +17,8 @@ clap = { version = "4", features = [ "derive", "wrap_help", "unicode" ] }
 dioxus = { version = "0.7", features = [ "desktop" ] }
 env_logger = "0.11"
 fuser = "0.17"
-gtk = "0.18"
 image = { version = "0.25", default-features = false, features = [ "png" ] }
+ksni = "0.3"
 libc = "0.2"
 log = "0.4"
 nix = { version = "0.31", default-features = false, features = [ "mount", "user" ] }
@@ -26,7 +26,6 @@ serde = { version = "1", features = [ "derive" ] }
 tokio = { version = "1", default-features = false, features = [ "rt-multi-thread", "time", "macros", "sync", "signal" ] }
 tokio-stream = "0.1"
 toml = "1.1"
-tray-icon = "0.22"
 zbus = { version = "5.14", default-features = false, features = [ "tokio" ] }
 
 fileprot-common = { path = "./fileprot-common" }

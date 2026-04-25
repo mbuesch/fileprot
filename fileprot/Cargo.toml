@@ -14,12 +14,11 @@ base64 = { workspace = true }
 clap = { workspace = true }
 dioxus = { workspace = true }
 env_logger = { workspace = true }
-gtk = { workspace = true }
 image = { workspace = true }
+ksni = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-tray-icon = { workspace = true }
 zbus = { workspace = true }
 
 fileprot-common = { workspace = true }

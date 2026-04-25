@@ -4,11 +4,6 @@ use dioxus::{
     desktop::{Config as DesktopConfig, LogicalSize, WindowBuilder, WindowCloseBehaviour, tao},
 };
 use image::GenericImageView;
-use std::{process, sync::atomic::Ordering};
-use tray_icon::{
-    TrayIconBuilder,
-    menu::{Menu, MenuEvent, MenuItem},
-};
 
 mod dbus_client;
 mod ui;
@@ -41,37 +36,8 @@ fn main() {
     // Parse command-line arguments.
     let args = Args::parse();
 
-    // GTK must be initialized before creating tray icon on Linux.
-    gtk::init().expect("Failed to initialize GTK");
-
-    // Build tray menu.
-    let menu = Menu::new();
-    let show_item = MenuItem::new("Show", true, None);
-    let quit_item = MenuItem::new("Quit", true, None);
-    let show_item_id = show_item.id().clone();
-    let quit_item_id = quit_item.id().clone();
-    menu.append(&show_item).unwrap();
-    menu.append(&quit_item).unwrap();
-
-    // Create tray icon with a simple colored icon.
-    let icon = ui::create_icon();
-    let _tray = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_tooltip("fileprot - File Protection")
-        .with_icon(icon)
-        .build()
-        .expect("failed to create tray icon");
-
-    // Handle tray menu events via set_event_handler so they run directly in the
-    // GTK activate-signal callback context, bypassing the crossbeam channel.
-    // This is the recommended pattern for tao/winit users per tray-icon docs.
-    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-        if event.id() == &show_item_id {
-            ui::SHOW_REQUESTED.store(true, Ordering::Relaxed);
-        } else if event.id() == &quit_item_id {
-            process::exit(0);
-        }
-    }));
+    // Spawn the tray icon via the StatusNotifierItem D-Bus protocol.
+    ui::spawn_tray();
 
     // Launch Dioxus desktop app.
     LaunchBuilder::desktop()
