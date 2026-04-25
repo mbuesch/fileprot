@@ -43,7 +43,7 @@ pub struct AccessRequest {
 /// happens to receive the same PID as a previously approved one will differ in
 /// at least one of exe_path or start_time.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ProcessIdentity {
+pub struct ProcessIdentity {
     /// Kernel process ID.
     pid: u32,
     /// UID of the requesting process (from the FUSE request credential).
@@ -56,18 +56,21 @@ struct ProcessIdentity {
 }
 
 impl ProcessIdentity {
-    /// Build a `ProcessIdentity` by reading `/proc/<pid>/` entries.
-    /// Returns `None` if the process has already exited or the files are
-    /// unreadable.
-    fn read(pid: u32, uid: u32) -> Option<Self> {
+    /// Snapshot a process's identity and derive its app name from the
+    /// executable path, using a single coherent set of `/proc/<pid>/` reads to
+    /// minimise the PID-reuse race window. Returns `None` if the process has
+    /// already exited or any required `/proc` entry is unreadable.
+    pub fn snapshot(pid: u32, uid: u32) -> Option<(Self, String)> {
         let exe_path = fs::read_link(format!("/proc/{}/exe", pid)).ok()?;
         let start_time = Self::read_start_time(pid)?;
-        Some(ProcessIdentity {
+        let app_name = exe_path.file_name()?.to_str()?.to_owned();
+        let identity = ProcessIdentity {
             pid,
             uid,
             exe_path,
             start_time,
-        })
+        };
+        Some((identity, app_name))
     }
 
     /// Read the process start time from `/proc/<pid>/stat` (field 22).
@@ -238,17 +241,15 @@ impl AccessController {
     /// Called from FUSE threads (synchronous context).
     pub fn request_access(
         &self,
-        pid: u32,
-        uid: u32,
+        identity: ProcessIdentity,
         path: String,
         app_name: String,
         operation: Operation,
     ) -> ah::Result<bool> {
-        // Build the process identity for cache operations.
-        let identity = ProcessIdentity::read(pid, uid);
+        let pid = identity.pid;
 
         // Return early if a valid approval is cached.
-        if self.check_cache(identity.as_ref()) == CachedApproval::Approved {
+        if self.check_cache(Some(&identity)) == CachedApproval::Approved {
             log::debug!("Approval cache hit: pid={} op={}", pid, operation);
             return Ok(true);
         }
@@ -263,7 +264,7 @@ impl AccessController {
         let request = AccessRequest {
             request: AccessControlRequest {
                 id: req_id.clone(),
-                pid,
+                pid: identity.pid,
                 path,
                 app_name,
                 operation: operation.to_string(),
@@ -302,7 +303,7 @@ impl AccessController {
             match response_rx.try_recv() {
                 Ok(approved) => {
                     if approved {
-                        self.cache_approval(identity);
+                        self.cache_approval(Some(identity));
                     }
                     return Ok(approved);
                 }

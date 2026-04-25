@@ -1,5 +1,5 @@
-use crate::access_control::{AccessController, QueueFullError};
-use fileprot_common::{Operation, resolve_app_name};
+use crate::access_control::{AccessController, ProcessIdentity, QueueFullError};
+use fileprot_common::Operation;
 use fuser::{
     AccessFlags, BsdFileFlags, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
     FileType, Filesystem, FopenFlags, Generation, INodeNo, IoctlFlags, LockOwner, OpenAccMode,
@@ -240,7 +240,20 @@ impl ProtectedFilesystem {
     ) -> Result<bool, Errno> {
         let pid = req.pid();
         let uid = req.uid();
-        let app_name = resolve_app_name(pid).map_err(|_| Errno::EIO)?;
+        // Snapshot the process identity and derive the app name in a single
+        // coherent read to minimise the PID-reuse race window. If the
+        // process has already exited we deny access rather than prompting with
+        // stale or mismatched information.
+        let (identity, app_name) = match ProcessIdentity::snapshot(pid, uid) {
+            Some(s) => s,
+            None => {
+                log::warn!(
+                    "Cannot snapshot pid={}: process has exited, denying access",
+                    pid
+                );
+                return Ok(false);
+            }
+        };
         let rel_path_str = rel_path.to_str().ok_or(Errno::EINVAL)?;
         let display_path = format!("[{}]/{}", self.mount_name, rel_path_str);
 
@@ -253,8 +266,7 @@ impl ProtectedFilesystem {
         );
 
         match self.access_control.request_access(
-            pid,
-            uid,
+            identity,
             display_path.clone(),
             app_name,
             operation,
@@ -318,7 +330,9 @@ impl Filesystem for ProtectedFilesystem {
     }
 
     fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
+        let mut path_map = self.path_to_inode.write().expect("Lock poisoned");
         let mut inode_map = self.inodes.write().expect("Lock poisoned");
+
         let remove = if let Some(data) = inode_map.get_mut(&ino.0) {
             data.ref_count = data.ref_count.saturating_sub(nlookup);
             data.ref_count == 0 && ino != ROOT_INODE
@@ -326,10 +340,13 @@ impl Filesystem for ProtectedFilesystem {
             false
         };
         if remove && let Some(data) = inode_map.remove(&ino.0) {
-            self.path_to_inode
-                .write()
-                .expect("Lock poisoned")
-                .remove(&data.rel_path);
+            // Only remove from path_to_inode if the entry still points to
+            // this inode. After unlink/rmdir the path entry is already
+            // gone; after a new file is created at the same path the entry
+            // maps to the new inode and must not be disturbed.
+            if path_map.get(&data.rel_path) == Some(&ino.0) {
+                path_map.remove(&data.rel_path);
+            }
         }
     }
 
@@ -814,10 +831,15 @@ impl Filesystem for ProtectedFilesystem {
         let backing = self.backing_path(&child_rel);
         match fs::remove_file(&backing) {
             Ok(()) => {
-                let mut path_map = self.path_to_inode.write().expect("Lock poisoned");
-                if let Some(ino) = path_map.remove(&child_rel) {
-                    self.inodes.write().expect("Lock poisoned").remove(&ino);
-                }
+                // Remove from the path table so new lookups start fresh, but
+                // do NOT remove from the inode table yet - the kernel may still
+                // hold a reference count on the inode (e.g. via open file
+                // handles). The FUSE protocol guarantees forget() will be
+                // called once the lookup count reaches zero.
+                self.path_to_inode
+                    .write()
+                    .expect("Lock poisoned")
+                    .remove(&child_rel);
                 reply.ok();
             }
             Err(e) => {
@@ -919,10 +941,12 @@ impl Filesystem for ProtectedFilesystem {
         let backing = self.backing_path(&child_rel);
         match fs::remove_dir(&backing) {
             Ok(()) => {
-                let mut path_map = self.path_to_inode.write().expect("Lock poisoned");
-                if let Some(ino) = path_map.remove(&child_rel) {
-                    self.inodes.write().expect("Lock poisoned").remove(&ino);
-                }
+                // Remove from the path table so new lookups start fresh, but
+                // do NOT remove from the inode table yet - see unlink.
+                self.path_to_inode
+                    .write()
+                    .expect("Lock poisoned")
+                    .remove(&child_rel);
                 reply.ok();
             }
             Err(e) => {
@@ -987,17 +1011,36 @@ impl Filesystem for ProtectedFilesystem {
         match fs::rename(&old_backing, &new_backing) {
             Ok(()) => {
                 let mut path_map = self.path_to_inode.write().expect("Lock poisoned");
+                let mut inode_map = self.inodes.write().expect("Lock poisoned");
+
+                // Update the renamed entry itself.
                 if let Some(ino) = path_map.remove(&old_rel) {
                     path_map.insert(new_rel.clone(), ino);
-                    if let Some(data) = self
-                        .inodes
-                        .write()
-                        .expect("Lock poisoned")
-                        .get_mut(&ino)
-                    {
-                        data.rel_path = new_rel;
+                    if let Some(data) = inode_map.get_mut(&ino) {
+                        data.rel_path = new_rel.clone();
                     }
                 }
+
+                // Rewrite cached paths for all descendants of a renamed
+                // directory so that stale rel_paths do not silently target
+                // the wrong backing location.
+                let descendants: Vec<(PathBuf, u64)> = path_map
+                    .iter()
+                    .filter(|(path, _)| path.starts_with(&old_rel))
+                    .map(|(path, &ino)| (path.clone(), ino))
+                    .collect();
+                for (old_path, ino) in descendants {
+                    let suffix = old_path
+                        .strip_prefix(&old_rel)
+                        .expect("filtered by starts_with");
+                    let new_path = new_rel.join(suffix);
+                    path_map.remove(&old_path);
+                    path_map.insert(new_path.clone(), ino);
+                    if let Some(data) = inode_map.get_mut(&ino) {
+                        data.rel_path = new_path;
+                    }
+                }
+
                 reply.ok();
             }
             Err(e) => {
