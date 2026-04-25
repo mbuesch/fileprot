@@ -9,6 +9,7 @@ use fileprot_common::dbus_interface::AccessControlRequest;
 use std::sync::Arc;
 use std::{pin::pin, sync::LazyLock, time::Duration};
 use tokio_stream::StreamExt;
+use x11rb::{connection::Connection as _, protocol::xproto::ConnectionExt as _};
 
 const CSS: &str = include_str!("style.css");
 const ICON_RAW_2_PNG: &[u8] = include_bytes!("../../../assets/icon_raw_2.png");
@@ -24,15 +25,59 @@ pub(crate) enum DbusAction {
     Respond { request_id: String, approved: bool },
 }
 
+/// Query the global cursor position from the X11 server.
+/// Returns `None` if the connection fails or the query fails.
+fn get_cursor_position() -> Option<(i32, i32)> {
+    let (conn, screen_num) = x11rb::connect(None).ok()?;
+    let root = conn.setup().roots[screen_num].root;
+    let reply = conn.query_pointer(root).ok()?.reply().ok()?;
+    Some((reply.root_x as i32, reply.root_y as i32))
+}
+
 fn raise_window(w: &tao::window::Window) {
     w.set_visible(true);
     w.set_minimized(false);
-    if let Some(monitor) = w.current_monitor() {
+
+    let cursor_pos = get_cursor_position();
+
+    // Find the monitor that contains the cursor, falling back to the window's current monitor.
+    let monitor = cursor_pos
+        .and_then(|(cx, cy)| {
+            w.available_monitors().find(|m| {
+                let pos = m.position();
+                let size = m.size();
+                cx >= pos.x
+                    && cx < pos.x + size.width as i32
+                    && cy >= pos.y
+                    && cy < pos.y + size.height as i32
+            })
+        })
+        .or_else(|| w.current_monitor());
+
+    if let Some(monitor) = monitor {
         let m_size = monitor.size();
         let m_pos = monitor.position();
         let w_size = w.outer_size();
-        let x = m_pos.x + (m_size.width as i32 - w_size.width as i32) / 2;
-        let y = m_pos.y + (m_size.height as i32 - w_size.height as i32) / 2;
+
+        let (x, y) = if let Some((cx, cy)) = cursor_pos {
+            // Center the window on the cursor, clamped to stay fully within the monitor.
+            let wx = cx - w_size.width as i32 / 2;
+            let wy = cy - w_size.height as i32 / 2;
+            let wx = wx
+                .max(m_pos.x)
+                .min(m_pos.x + m_size.width as i32 - w_size.width as i32);
+            let wy = wy
+                .max(m_pos.y)
+                .min(m_pos.y + m_size.height as i32 - w_size.height as i32);
+            (wx, wy)
+        } else {
+            // Fall back to centering on the monitor.
+            (
+                m_pos.x + (m_size.width as i32 - w_size.width as i32) / 2,
+                m_pos.y + (m_size.height as i32 - w_size.height as i32) / 2,
+            )
+        };
+
         w.set_outer_position(tao::dpi::PhysicalPosition::new(x, y));
     }
     w.set_focus();
