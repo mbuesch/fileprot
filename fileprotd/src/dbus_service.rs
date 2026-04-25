@@ -11,13 +11,14 @@ use std::{
 use tokio::sync::{Mutex, mpsc};
 use zbus::{Connection, connection, interface, object_server::SignalEmitter};
 
-/// Whether to verify the identity of the GUI peer on D-Bus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeerVerification {
-    /// Verify that the calling binary matches the configured GUI path.
-    Enabled,
-    /// Skip peer verification (for testing only).
-    Disabled,
+/// D-Bus peer-verification options (for testing only).
+/// In production both checks should remain enabled.
+#[derive(Debug, Clone, Copy)]
+pub struct PeerVerification {
+    /// Verify that the calling binary's (dev, ino) matches the configured GUI path.
+    pub verify_exe: bool,
+    /// Verify that the caller's Unix UID matches the UID of the requested file's owner.
+    pub verify_uid: bool,
 }
 
 /// A pending request waiting for user response.
@@ -36,12 +37,41 @@ pub struct AccessControlService {
 #[interface(name = "ch.bues.fileprot.AccessControl")]
 impl AccessControlService {
     /// Get all currently pending access requests.
-    async fn get_pending_requests(&self) -> Vec<AccessControlRequest> {
+    /// Only requests whose FUSE-reported UID matches the caller's D-Bus UID
+    /// are returned, preventing cross-user information disclosure.
+    /// The caller's binary is also verified against the configured GUI path.
+    async fn get_pending_requests(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Vec<AccessControlRequest> {
+        // Verify binary identity first.
+        if self.peer_verification.verify_exe
+            && let Err(e) = self.verify_peer(&header, connection).await
+        {
+            log::warn!("Peer verification failed for GetPendingRequests: {}", e);
+            return vec![];
+        }
+        // Then filter by UID to prevent cross-user information disclosure.
+        let caller_uid = match Self::caller_uid(&header, connection).await {
+            Ok(u) => u,
+            Err(e) => {
+                log::warn!("Failed to get caller UID for GetPendingRequests: {}", e);
+                return vec![];
+            }
+        };
         let pending = self.pending.lock().await;
-        pending.values().map(|r| r.request.clone()).collect()
+        pending
+            .values()
+            .filter(|e| !self.peer_verification.verify_uid || e.request.uid == caller_uid)
+            .map(|e| e.request.clone())
+            .collect()
     }
 
     /// Respond to an access request. Returns true if the request was found.
+    /// The caller's binary is verified against the configured GUI path, and
+    /// the caller's D-Bus UID must match the UID of the requesting process;
+    /// this prevents User B from approving or denying User A's requests.
     async fn respond_to_request(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -49,8 +79,8 @@ impl AccessControlService {
         request_id: &str,
         approved: bool,
     ) -> zbus::fdo::Result<bool> {
-        // Verify the caller is a legitimate fileprot GUI.
-        if self.peer_verification == PeerVerification::Enabled
+        // Verify binary identity first.
+        if self.peer_verification.verify_exe
             && let Err(e) = self.verify_peer(&header, connection).await
         {
             log::warn!("Peer verification failed: {}", e);
@@ -59,8 +89,36 @@ impl AccessControlService {
                 e
             )));
         }
+        // Then verify UID to prevent cross-user approval bypass.
+        let caller_uid = match Self::caller_uid(&header, connection).await {
+            Ok(u) => u,
+            Err(e) => {
+                log::warn!("UID check failed: {}", e);
+                return Err(zbus::fdo::Error::AccessDenied(format!(
+                    "UID check failed: {}",
+                    e
+                )));
+            }
+        };
 
         let mut pending = self.pending.lock().await;
+
+        // Verify UID match before acting.
+        if self.peer_verification.verify_uid
+            && let Some(entry) = pending.get(request_id)
+            && entry.request.uid != caller_uid
+        {
+            log::warn!(
+                "RespondToRequest: caller UID {} does not match request UID {} (id={})",
+                caller_uid,
+                entry.request.uid,
+                request_id
+            );
+            return Err(zbus::fdo::Error::AccessDenied(
+                "UID mismatch: you can only respond to requests from your own user".to_string(),
+            ));
+        }
+
         if let Some(mut req) = pending.remove(request_id) {
             log::info!(
                 "Request {} {} by user",
@@ -99,7 +157,26 @@ impl AccessControlService {
         }
     }
 
-    /// Verify that the D-Bus caller is the legitimate fileprot GUI binary.
+    /// Get the real UID of the D-Bus caller via GetConnectionUnixUser.
+    async fn caller_uid(
+        header: &zbus::message::Header<'_>,
+        connection: &Connection,
+    ) -> ah::Result<u32> {
+        let sender = header
+            .sender()
+            .ok_or_else(|| err!("no sender bus name in header"))?;
+        let dbus_proxy = zbus::fdo::DBusProxy::new(connection)
+            .await
+            .context("failed to create DBus proxy")?;
+        dbus_proxy
+            .get_connection_unix_user(sender.clone().into())
+            .await
+            .context("failed to get caller UID")
+    }
+
+    /// Verify that the D-Bus caller is the legitimate fileprot GUI binary
+    /// by comparing (device, inode) of the caller's /proc/<pid>/exe against
+    /// the configured GUI binary path.
     async fn verify_peer(
         &self,
         header: &zbus::message::Header<'_>,

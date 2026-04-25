@@ -1,4 +1,3 @@
-use crate::dbus_service::PeerVerification;
 use anyhow::{self as ah, format_err as err};
 use clap::Parser;
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
@@ -33,9 +32,13 @@ struct Args {
     #[arg(short = 'c', long = "config")]
     config: Option<PathBuf>,
 
-    /// Disable GUI peer verification (for testing only)
-    #[arg(long = "no-verify-peer")]
-    no_verify_peer: bool,
+    /// Disable GUI peer verification via exe inode check (for testing only)
+    #[arg(long = "no-verify-peer-exe")]
+    no_verify_peer_exe: bool,
+
+    /// Disable GUI peer verification via UID check (for testing only)
+    #[arg(long = "no-verify-peer-uid")]
+    no_verify_peer_uid: bool,
 }
 
 #[tokio::main]
@@ -61,10 +64,9 @@ async fn main() -> ah::Result<()> {
     let (request_tx, request_rx) = mpsc::channel(256);
 
     // Start the D-Bus service.
-    let peer_verification = if args.no_verify_peer {
-        PeerVerification::Disabled
-    } else {
-        PeerVerification::Enabled
+    let peer_verification = dbus_service::PeerVerification {
+        verify_exe: !args.no_verify_peer_exe,
+        verify_uid: !args.no_verify_peer_uid,
     };
     let _connection = dbus_service::start_dbus_service(
         request_rx,

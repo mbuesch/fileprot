@@ -295,6 +295,7 @@ impl AccessController {
             request: AccessControlRequest {
                 id: req_id.clone(),
                 pid: identity.pid,
+                uid: identity.uid,
                 path,
                 app_name,
                 operation: operation.to_string(),

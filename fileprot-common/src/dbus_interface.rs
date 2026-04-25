@@ -17,6 +17,7 @@ use zbus::{proxy, zvariant::Type};
 pub struct AccessControlRequest {
     pub id: String,
     pub pid: u32,
+    pub uid: u32,
     pub path: String,
     pub app_name: String,
     pub operation: String,
