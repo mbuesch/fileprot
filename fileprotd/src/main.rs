@@ -225,7 +225,14 @@ async fn main() -> ah::Result<()> {
             mount_cfg.uid(),
             mount_cfg.gid(),
             Arc::clone(&access_controller),
-        );
+        )
+        .map_err(|e| {
+            err!(
+                "Failed to open backing dir for '{}': {}",
+                mount_cfg.name(),
+                e
+            )
+        })?;
 
         let mut fuser_config = FuserConfig::default();
         fuser_config.mount_options = vec![

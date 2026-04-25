@@ -46,6 +46,7 @@
 - Generally avoid `unwrap()`.
 - When unwrapping a lock guard, use `expect("Lock poisoned")` instead of `unwrap()`.
 - Prefer `use` statements to bring crate paths into scope rather than using crate-root paths directly.
+- Use code from safe crates such as `nix` instead of calling unsafe syscalls directly.
 - Always run `cargo clippy` after making changes and address warnings; prefer clippy over relying solely on `cargo build`.
 - After changing code, run `cargo fmt` to ensure consistent formatting.
 - After changing Dioxus code, run `dx fmt` to ensure consistent formatting.

@@ -8,17 +8,18 @@ use fuser::{
     ReplyLseek, ReplyOpen, ReplyPoll, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use nix::{
-    fcntl::{AT_FDCWD, RenameFlags as NixRenameFlags, renameat2},
-    unistd::{Gid, Uid, chown as nix_chown},
+    fcntl::{AtFlags, OFlag, RenameFlags as NixRenameFlags, openat, readlinkat, renameat2},
+    sys::stat::{FchmodatFlags, FileStat, Mode, SFlag, fchmodat, fstatat, mkdirat},
+    unistd::{Gid, Uid, UnlinkatFlags, dup, fchownat, unlinkat},
 };
 use std::{
     collections::HashMap,
-    ffi::OsStr,
-    fs::{self, File, Metadata, OpenOptions, Permissions},
+    ffi::{OsStr, OsString},
+    fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{MetadataExt, PermissionsExt},
+    os::{
+        fd::{AsFd, OwnedFd},
+        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
     },
     path::{Path, PathBuf},
     sync::{
@@ -30,6 +31,11 @@ use std::{
 
 const TTL: Duration = Duration::from_secs(1);
 const ROOT_INODE: INodeNo = INodeNo(1);
+
+/// Convert a `nix::errno::Errno` to a `fuser::Errno`.
+fn errno_from_nix(e: nix::errno::Errno) -> Errno {
+    Errno::from_i32(e as i32)
+}
 
 /// Validate a single path-component name received from the FUSE kernel
 /// before joining it to any path.
@@ -74,8 +80,11 @@ struct OpenFileHandle {
 pub struct ProtectedFilesystem {
     /// Name of this mount (from config).
     mount_name: String,
-    /// Absolute path to the backing directory.
+    /// Absolute path to the backing directory (kept for display/logging only).
     backing_dir: PathBuf,
+    /// Open file descriptor for the backing directory, used for all *at syscalls.
+    /// Stored in an Arc so it can be cheaply shared without copying raw fds.
+    backing_dir_fd: Arc<OwnedFd>,
     /// uid that owns all entries in the virtual filesystem.
     mount_uid: u32,
     /// gid that owns all entries in the virtual filesystem.
@@ -101,7 +110,7 @@ impl ProtectedFilesystem {
         mount_uid: u32,
         mount_gid: u32,
         access_control: Arc<AccessController>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let mut inodes = HashMap::new();
         let mut path_to_inode = HashMap::new();
 
@@ -115,9 +124,27 @@ impl ProtectedFilesystem {
         );
         path_to_inode.insert("".into(), ROOT_INODE.0);
 
-        ProtectedFilesystem {
+        // Open the backing directory as a file descriptor rooted for all *at
+        // syscalls. O_NOFOLLOW ensures we do not follow a symlink in the final
+        // component of backing_dir itself. OpenOptions with custom_flags is
+        // safe and avoids any unsafe code.
+        let backing_file = OpenOptions::new()
+            .read(true)
+            .custom_flags((OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC).bits())
+            .open(&backing_dir)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to open backing directory '{}': {}",
+                    backing_dir.display(),
+                    e
+                )
+            })?;
+        let backing_dir_fd: OwnedFd = backing_file.into();
+
+        Ok(ProtectedFilesystem {
             mount_name,
             backing_dir,
+            backing_dir_fd: Arc::new(backing_dir_fd),
             mount_uid,
             mount_gid,
             inodes: RwLock::new(inodes),
@@ -126,12 +153,98 @@ impl ProtectedFilesystem {
             open_files: RwLock::new(HashMap::new()),
             next_fh: AtomicU64::new(1),
             access_control,
-        }
+        })
     }
 
     /// Get the absolute path in the backing directory for a relative path.
-    fn backing_path(&self, rel_path: &Path) -> PathBuf {
+    /// Used only for display/logging, not for actual I/O.
+    fn backing_path_display(&self, rel_path: &Path) -> PathBuf {
         self.backing_dir.join(rel_path)
+    }
+
+    /// Walk `rel_path` component by component starting from the backing dir fd,
+    /// opening each intermediate directory with `O_PATH | O_NOFOLLOW | O_DIRECTORY`
+    /// to prevent symlink escapes in any component.
+    ///
+    /// Returns `(parent_fd, leaf_name)` where `parent_fd` is an fd opened on
+    /// the directory that contains the leaf, and `leaf_name` is the final path
+    /// component as an `OsString`.
+    ///
+    /// For the root (empty `rel_path`) this returns a dup of the backing dir fd
+    /// and an empty leaf name (the caller must handle that case).
+    fn resolve_parent_fd(&self, rel_path: &Path) -> Result<(OwnedFd, OsString), nix::errno::Errno> {
+        let mut components: Vec<&OsStr> = rel_path
+            .components()
+            .map(|c| c.as_os_str())
+            .filter(|c| !c.is_empty())
+            .collect();
+
+        // Dup the backing dir fd so we can close it independently.
+        let base_fd = dup(self.backing_dir_fd.as_fd())?;
+
+        if components.is_empty() {
+            // Caller wants the root itself; return backing dir fd + empty name.
+            return Ok((base_fd, OsString::new()));
+        }
+
+        let leaf = components.pop().expect("non-empty after check").to_owned();
+
+        let mut current_fd = base_fd;
+        for component in components {
+            let next_fd = openat(
+                current_fd.as_fd(),
+                component,
+                OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )?;
+            current_fd = next_fd;
+        }
+
+        Ok((current_fd, leaf.to_os_string()))
+    }
+
+    /// Open a file (or directory) at `rel_path` inside the backing dir, using
+    /// `*at` syscalls that never follow symlinks in any component.
+    ///
+    /// `flags` are passed to `openat` for the leaf; `O_NOFOLLOW` is always
+    /// added automatically.  `mode` is used only when creating a new file.
+    fn open_backing_at(
+        &self,
+        rel_path: &Path,
+        flags: OFlag,
+        mode: Mode,
+    ) -> Result<OwnedFd, nix::errno::Errno> {
+        let (parent_fd, leaf) = self.resolve_parent_fd(rel_path)?;
+        if leaf.is_empty() {
+            // Opening the backing dir itself.
+            return openat(
+                parent_fd.as_fd(),
+                ".",
+                (flags | OFlag::O_NOFOLLOW) & !OFlag::O_PATH,
+                mode,
+            );
+        }
+        openat(
+            parent_fd.as_fd(),
+            leaf.as_os_str(),
+            flags | OFlag::O_NOFOLLOW,
+            mode,
+        )
+    }
+
+    /// `fstatat` on `rel_path` with `AT_SYMLINK_NOFOLLOW` to avoid following
+    /// symlinks in any component.
+    fn stat_at(&self, rel_path: &Path) -> Result<FileStat, nix::errno::Errno> {
+        let (parent_fd, leaf) = self.resolve_parent_fd(rel_path)?;
+        if leaf.is_empty() {
+            // Root directory.
+            return fstatat(parent_fd.as_fd(), ".", AtFlags::AT_SYMLINK_NOFOLLOW);
+        }
+        fstatat(
+            parent_fd.as_fd(),
+            leaf.as_os_str(),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        )
     }
 
     /// Get the relative path for an inode.
@@ -204,59 +317,60 @@ impl ProtectedFilesystem {
         Ok(INodeNo(ino))
     }
 
-    /// Convert [`Metadata`] to [`FileAttr`].
-    fn metadata_to_attr(&self, ino: INodeNo, metadata: &Metadata) -> FileAttr {
-        let kind = if metadata.is_dir() {
+    /// Convert a [`nix::sys::stat::FileStat`] (from `fstatat`) to [`FileAttr`].
+    fn stat_to_attr(&self, ino: INodeNo, st: &FileStat) -> FileAttr {
+        let mode = SFlag::from_bits_truncate(st.st_mode);
+        let kind = if mode.contains(SFlag::S_IFDIR) {
             FileType::Directory
-        } else if metadata.is_symlink() {
+        } else if mode.contains(SFlag::S_IFLNK) {
             FileType::Symlink
         } else {
             FileType::RegularFile
         };
 
+        fn ts_to_systime(secs: i64, nsecs: i64) -> std::time::SystemTime {
+            let nsecs = nsecs.max(0) as u32;
+            if secs >= 0 {
+                UNIX_EPOCH + Duration::new(secs as u64, nsecs)
+            } else {
+                // Pre-epoch timestamp: compute as UNIX_EPOCH - |duration|.
+                // The kernel reports (secs, nsecs) where nsecs is always in
+                // [0, 999_999_999], so for secs=-2, nsecs=500_000_000 the
+                // true offset is -1.5 s.
+                let (d_secs, d_nsecs) = if nsecs == 0 {
+                    ((-secs) as u64, 0u32)
+                } else {
+                    ((-secs - 1) as u64, 1_000_000_000 - nsecs)
+                };
+                UNIX_EPOCH
+                    .checked_sub(Duration::new(d_secs, d_nsecs))
+                    .unwrap_or(UNIX_EPOCH)
+            }
+        }
+
         FileAttr {
             ino,
-            size: metadata.len(),
-            blocks: metadata.blocks(),
-            atime: metadata.accessed().unwrap_or(UNIX_EPOCH),
-            mtime: metadata.modified().unwrap_or(UNIX_EPOCH),
-            ctime: {
-                let secs = metadata.ctime();
-                let nsecs = metadata.ctime_nsec().max(0) as u32;
-                if secs >= 0 {
-                    UNIX_EPOCH + Duration::new(secs as u64, nsecs)
-                } else {
-                    // Pre-epoch ctime (e.g. on misconfigured filesystems): compute as
-                    // UNIX_EPOCH - |duration|.  The kernel reports (secs, nsecs) where
-                    // nsecs is always in [0, 999_999_999], so for secs=-2, nsecs=500_000_000
-                    // the true offset is -1.5 s (secs+1 whole seconds before epoch,
-                    // then 1e9-nsecs nanoseconds into that second).
-                    let (d_secs, d_nsecs) = if nsecs == 0 {
-                        ((-secs) as u64, 0u32)
-                    } else {
-                        ((-secs - 1) as u64, 1_000_000_000 - nsecs)
-                    };
-                    UNIX_EPOCH
-                        .checked_sub(Duration::new(d_secs, d_nsecs))
-                        .unwrap_or(UNIX_EPOCH)
-                }
-            },
-            crtime: metadata.created().unwrap_or(UNIX_EPOCH),
+            size: st.st_size as u64,
+            blocks: st.st_blocks as u64,
+            atime: ts_to_systime(st.st_atime, st.st_atime_nsec),
+            mtime: ts_to_systime(st.st_mtime, st.st_mtime_nsec),
+            ctime: ts_to_systime(st.st_ctime, st.st_ctime_nsec),
+            crtime: UNIX_EPOCH,
             kind,
-            perm: (metadata.mode() & 0o7777) as u16,
-            nlink: metadata.nlink() as u32,
+            perm: (st.st_mode & 0o7777) as u16,
+            nlink: st.st_nlink as u32,
             uid: self.mount_uid,
             gid: self.mount_gid,
-            rdev: metadata.rdev() as u32,
-            blksize: metadata.blksize() as u32,
+            rdev: st.st_rdev as u32,
+            blksize: st.st_blksize as u32,
             flags: 0,
         }
     }
 
-    /// Read metadata for a backing path and return FileAttr.
-    fn stat(&self, ino: INodeNo, backing_path: &Path) -> Result<FileAttr, Errno> {
-        let metadata = fs::symlink_metadata(backing_path).map_err(Errno::from)?;
-        Ok(self.metadata_to_attr(ino, &metadata))
+    /// Stat `rel_path` (no symlink follow) and return FileAttr.
+    fn stat(&self, ino: INodeNo, rel_path: &Path) -> Result<FileAttr, Errno> {
+        let st = self.stat_at(rel_path).map_err(errno_from_nix)?;
+        Ok(self.stat_to_attr(ino, &st))
     }
 
     /// Allocate a new file handle.
@@ -353,10 +467,9 @@ impl Filesystem for ProtectedFilesystem {
         };
 
         let child_rel = parent_path.join(name);
-        let backing = self.backing_path(&child_rel);
 
-        match fs::symlink_metadata(&backing) {
-            Ok(metadata) => {
+        match self.stat_at(&child_rel) {
+            Ok(st) => {
                 let ino = match self.get_or_create_inode(&child_rel) {
                     Ok(i) => i,
                     Err(e) => {
@@ -364,7 +477,7 @@ impl Filesystem for ProtectedFilesystem {
                         return;
                     }
                 };
-                let attr = self.metadata_to_attr(ino, &metadata);
+                let attr = self.stat_to_attr(ino, &st);
                 reply.entry(&TTL, &attr, Generation(0));
             }
             Err(_) => {
@@ -412,8 +525,9 @@ impl Filesystem for ProtectedFilesystem {
             }
         };
 
-        let backing = self.backing_path(&rel_path);
-        match self.stat(ino, &backing) {
+        let backing = self.backing_path_display(&rel_path);
+        let _ = backing; // used for display only
+        match self.stat(ino, &rel_path) {
             Ok(attr) => reply.attr(&TTL, &attr),
             Err(e) => reply.error(e),
         }
@@ -458,7 +572,8 @@ impl Filesystem for ProtectedFilesystem {
             Ok(true) => {}
         }
 
-        let backing = self.backing_path(&rel_path);
+        let backing_display = self.backing_path_display(&rel_path);
+        let _ = backing_display;
 
         // Handle truncation.
         if let Some(new_size) = size {
@@ -473,24 +588,30 @@ impl Filesystem for ProtectedFilesystem {
             } else {
                 // Only regular files can be truncated via open-for-write.
                 // Directories and symlinks must not be opened this way.
-                match fs::symlink_metadata(&backing) {
-                    Ok(m) if m.is_file() => {}
-                    Ok(_) => {
-                        reply.error(Errno::EINVAL);
-                        return;
-                    }
+                let st = match self.stat_at(&rel_path) {
+                    Ok(s) => s,
                     Err(e) => {
-                        reply.error(Errno::from(e));
-                        return;
-                    }
-                }
-                let file = match OpenOptions::new().write(true).open(&backing) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        reply.error(Errno::from(e));
+                        reply.error(errno_from_nix(e));
                         return;
                     }
                 };
+                if (st.st_mode & libc::S_IFMT) != libc::S_IFREG {
+                    reply.error(Errno::EINVAL);
+                    return;
+                }
+                let fd = match self.open_backing_at(
+                    &rel_path,
+                    OFlag::O_WRONLY | OFlag::O_CLOEXEC,
+                    Mode::empty(),
+                ) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        reply.error(errno_from_nix(e));
+                        return;
+                    }
+                };
+                // File::from(OwnedFd) is a safe conversion.
+                let file = File::from(fd);
                 if file.set_len(new_size).is_err() {
                     reply.error(Errno::EIO);
                     return;
@@ -500,8 +621,27 @@ impl Filesystem for ProtectedFilesystem {
 
         // Handle mode change.
         if let Some(mode) = mode {
-            let perms = Permissions::from_mode(mode);
-            if fs::set_permissions(&backing, perms).is_err() {
+            let (parent_fd, leaf) = match self.resolve_parent_fd(&rel_path) {
+                Ok(r) => r,
+                Err(e) => {
+                    reply.error(errno_from_nix(e));
+                    return;
+                }
+            };
+            let leaf_path = if leaf.is_empty() {
+                std::ffi::OsString::from(".")
+            } else {
+                leaf
+            };
+            let nix_mode = Mode::from_bits_truncate(mode);
+            if fchmodat(
+                parent_fd.as_fd(),
+                leaf_path.as_os_str(),
+                nix_mode,
+                FchmodatFlags::FollowSymlink,
+            )
+            .is_err()
+            {
                 reply.error(Errno::EIO);
                 return;
             }
@@ -509,16 +649,34 @@ impl Filesystem for ProtectedFilesystem {
 
         // Handle uid/gid change.
         if uid.is_some() || gid.is_some() {
+            let (parent_fd, leaf) = match self.resolve_parent_fd(&rel_path) {
+                Ok(r) => r,
+                Err(e) => {
+                    reply.error(errno_from_nix(e));
+                    return;
+                }
+            };
+            let leaf_path = if leaf.is_empty() {
+                std::ffi::OsString::from(".")
+            } else {
+                leaf
+            };
             let new_uid = uid.map(Uid::from_raw);
             let new_gid = gid.map(Gid::from_raw);
-            if let Err(e) = nix_chown(backing.as_path(), new_uid, new_gid) {
-                reply.error(Errno::from_i32(e as i32));
+            if let Err(e) = fchownat(
+                parent_fd.as_fd(),
+                leaf_path.as_os_str(),
+                new_uid,
+                new_gid,
+                AtFlags::AT_SYMLINK_NOFOLLOW,
+            ) {
+                reply.error(errno_from_nix(e));
                 return;
             }
         }
 
         // Return updated attributes.
-        match self.stat(ino, &backing) {
+        match self.stat(ino, &rel_path) {
             Ok(attr) => reply.attr(&TTL, &attr),
             Err(e) => reply.error(e),
         }
@@ -540,11 +698,25 @@ impl Filesystem for ProtectedFilesystem {
             }
         };
 
-        let backing = self.backing_path(&rel_path);
-        let entries = match fs::read_dir(&backing) {
-            Ok(e) => e,
+        let backing = self.backing_path_display(&rel_path);
+        let _ = backing;
+        // Open the directory safely via *at to avoid following symlinks in
+        // any intermediate component of the path.
+        let dir_fd = match self.open_backing_at(
+            &rel_path,
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
             Err(e) => {
-                reply.error(Errno::from(e));
+                reply.error(errno_from_nix(e));
+                return;
+            }
+        };
+        let dir = match nix::dir::Dir::from_fd(dir_fd) {
+            Ok(d) => d,
+            Err(e) => {
+                reply.error(errno_from_nix(e));
                 return;
             }
         };
@@ -561,20 +733,22 @@ impl Filesystem for ProtectedFilesystem {
             file_type: FileType,
         }
         let mut raw: Vec<RawEntry> = vec![];
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
+        for entry in dir.into_iter().flatten() {
+            let name_cstr = entry.file_name();
+            let name_os = OsStr::from_bytes(name_cstr.to_bytes());
+            // Skip . and .. - we add them ourselves below.
+            if name_os == "." || name_os == ".." {
+                continue;
+            }
+            let name = name_os.to_string_lossy().into_owned();
             let child_rel = rel_path.join(&name);
             let file_type = match entry.file_type() {
-                Ok(ft) => {
-                    if ft.is_dir() {
-                        FileType::Directory
-                    } else if ft.is_symlink() {
-                        FileType::Symlink
-                    } else {
-                        FileType::RegularFile
-                    }
-                }
-                Err(_) => FileType::RegularFile,
+                Some(ft) => match ft {
+                    nix::dir::Type::Directory => FileType::Directory,
+                    nix::dir::Type::Symlink => FileType::Symlink,
+                    _ => FileType::RegularFile,
+                },
+                None => FileType::RegularFile,
             };
             raw.push(RawEntry {
                 name,
@@ -643,33 +817,31 @@ impl Filesystem for ProtectedFilesystem {
             Ok(true) => {}
         }
 
-        let backing = self.backing_path(&rel_path);
-        let mut opts = OpenOptions::new();
-        match flags.acc_mode() {
-            OpenAccMode::O_RDONLY => {
-                opts.read(true);
-            }
-            OpenAccMode::O_WRONLY => {
-                opts.write(true);
-            }
-            OpenAccMode::O_RDWR => {
-                opts.read(true).write(true);
-            }
-        }
+        let backing_display = self.backing_path_display(&rel_path);
+        let _ = backing_display;
+        let mut open_flags = match flags.acc_mode() {
+            OpenAccMode::O_RDONLY => OFlag::O_RDONLY,
+            OpenAccMode::O_WRONLY => OFlag::O_WRONLY,
+            OpenAccMode::O_RDWR => OFlag::O_RDWR,
+        };
         if flags.0 & libc::O_APPEND != 0 {
-            opts.append(true);
+            open_flags |= OFlag::O_APPEND;
         }
         if flags.0 & libc::O_TRUNC != 0 {
-            opts.truncate(true);
+            open_flags |= OFlag::O_TRUNC;
         }
+        open_flags |= OFlag::O_CLOEXEC;
 
-        match opts.open(&backing) {
-            Ok(file) => match self.alloc_fh(file, ino) {
-                Some(fh) => reply.opened(fh, FopenFlags::empty()),
-                None => reply.error(Errno::EMFILE),
-            },
+        match self.open_backing_at(&rel_path, open_flags, Mode::empty()) {
+            Ok(owned_fd) => {
+                let file = File::from(owned_fd);
+                match self.alloc_fh(file, ino) {
+                    Some(fh) => reply.opened(fh, FopenFlags::empty()),
+                    None => reply.error(Errno::EMFILE),
+                }
+            }
             Err(e) => {
-                reply.error(Errno::from(e));
+                reply.error(errno_from_nix(e));
             }
         }
     }
@@ -831,29 +1003,30 @@ impl Filesystem for ProtectedFilesystem {
             Ok(true) => {}
         }
 
-        let backing = self.backing_path(&child_rel);
+        let backing_display = self.backing_path_display(&child_rel);
+        let _ = backing_display;
 
-        // Create the file.
-        let mut opts = OpenOptions::new();
-        // O_EXCL: fail if the file already exists (create_new implies create).
+        // Create the file using openat with O_NOFOLLOW to prevent following
+        // symlinks in the leaf component.
+        let mut create_flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_CLOEXEC;
         if flags & libc::O_EXCL != 0 {
-            opts.create_new(true).write(true);
-        } else {
-            opts.create(true).write(true);
+            create_flags |= OFlag::O_EXCL;
         }
-
         let access_mode = flags & libc::O_ACCMODE;
         if access_mode == libc::O_RDWR || access_mode == libc::O_RDONLY {
-            opts.read(true);
+            create_flags |= OFlag::O_RDONLY;
+            // O_RDWR = O_RDONLY | O_WRONLY; nix OFlag handles this.
+            create_flags &= !OFlag::O_WRONLY;
+            create_flags |= OFlag::O_RDWR;
         }
         if flags & libc::O_TRUNC != 0 {
-            opts.truncate(true);
+            create_flags |= OFlag::O_TRUNC;
         }
+        let create_mode = Mode::from_bits_truncate(mode);
 
-        match opts.open(&backing) {
-            Ok(file) => {
-                // Set permissions.
-                let _ = fs::set_permissions(&backing, Permissions::from_mode(mode));
+        match self.open_backing_at(&child_rel, create_flags, create_mode) {
+            Ok(owned_fd) => {
+                let file = File::from(owned_fd);
 
                 let ino = match self.get_or_create_inode(&child_rel) {
                     Ok(i) => i,
@@ -863,7 +1036,7 @@ impl Filesystem for ProtectedFilesystem {
                     }
                 };
                 match self.alloc_fh(file, ino) {
-                    Some(fh) => match self.stat(ino, &backing) {
+                    Some(fh) => match self.stat(ino, &child_rel) {
                         Ok(attr) => {
                             reply.created(&TTL, &attr, Generation(0), fh, FopenFlags::empty())
                         }
@@ -873,7 +1046,7 @@ impl Filesystem for ProtectedFilesystem {
                 }
             }
             Err(e) => {
-                reply.error(Errno::from(e));
+                reply.error(errno_from_nix(e));
             }
         }
     }
@@ -907,8 +1080,18 @@ impl Filesystem for ProtectedFilesystem {
             Ok(true) => {}
         }
 
-        let backing = self.backing_path(&child_rel);
-        match fs::remove_file(&backing) {
+        let (parent_fd, leaf) = match self.resolve_parent_fd(&child_rel) {
+            Ok(r) => r,
+            Err(e) => {
+                reply.error(errno_from_nix(e));
+                return;
+            }
+        };
+        match unlinkat(
+            parent_fd.as_fd(),
+            leaf.as_os_str(),
+            UnlinkatFlags::NoRemoveDir,
+        ) {
             Ok(()) => {
                 // Remove from the path table so new lookups start fresh, but
                 // do NOT remove from the inode table yet - the kernel may still
@@ -922,7 +1105,7 @@ impl Filesystem for ProtectedFilesystem {
                 reply.ok();
             }
             Err(e) => {
-                reply.error(Errno::from(e));
+                reply.error(errno_from_nix(e));
             }
         }
     }
@@ -964,12 +1147,16 @@ impl Filesystem for ProtectedFilesystem {
             Ok(true) => {}
         }
 
-        let backing = self.backing_path(&child_rel);
-
-        match fs::create_dir(&backing) {
+        let nix_mode = Mode::from_bits_truncate(mode);
+        let (parent_fd, leaf) = match self.resolve_parent_fd(&child_rel) {
+            Ok(r) => r,
+            Err(e) => {
+                reply.error(errno_from_nix(e));
+                return;
+            }
+        };
+        match mkdirat(parent_fd.as_fd(), leaf.as_os_str(), nix_mode) {
             Ok(()) => {
-                let _ = fs::set_permissions(&backing, Permissions::from_mode(mode));
-
                 let ino = match self.get_or_create_inode(&child_rel) {
                     Ok(i) => i,
                     Err(e) => {
@@ -977,13 +1164,13 @@ impl Filesystem for ProtectedFilesystem {
                         return;
                     }
                 };
-                match self.stat(ino, &backing) {
+                match self.stat(ino, &child_rel) {
                     Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
                     Err(e) => reply.error(e),
                 }
             }
             Err(e) => {
-                reply.error(Errno::from(e));
+                reply.error(errno_from_nix(e));
             }
         }
     }
@@ -1017,8 +1204,18 @@ impl Filesystem for ProtectedFilesystem {
             Ok(true) => {}
         }
 
-        let backing = self.backing_path(&child_rel);
-        match fs::remove_dir(&backing) {
+        let (parent_fd, leaf) = match self.resolve_parent_fd(&child_rel) {
+            Ok(r) => r,
+            Err(e) => {
+                reply.error(errno_from_nix(e));
+                return;
+            }
+        };
+        match unlinkat(
+            parent_fd.as_fd(),
+            leaf.as_os_str(),
+            UnlinkatFlags::RemoveDir,
+        ) {
             Ok(()) => {
                 // Remove from the path table so new lookups start fresh, but
                 // do NOT remove from the inode table yet - see unlink.
@@ -1029,7 +1226,7 @@ impl Filesystem for ProtectedFilesystem {
                 reply.ok();
             }
             Err(e) => {
-                reply.error(Errno::from(e));
+                reply.error(errno_from_nix(e));
             }
         }
     }
@@ -1092,26 +1289,42 @@ impl Filesystem for ProtectedFilesystem {
             Ok(true) => {}
         }
 
-        let old_backing = self.backing_path(&old_rel);
-        let new_backing = self.backing_path(&new_rel);
+        let old_backing_display = self.backing_path_display(&old_rel);
+        let new_backing_display = self.backing_path_display(&new_rel);
+        let _ = (old_backing_display, new_backing_display);
+
+        // Resolve parent fds for both old and new paths to perform
+        // renameat2 without following any symlinks in intermediate components.
+        let (old_parent_fd, old_leaf) = match self.resolve_parent_fd(&old_rel) {
+            Ok(r) => r,
+            Err(e) => {
+                reply.error(errno_from_nix(e));
+                return;
+            }
+        };
+        let (new_parent_fd, new_leaf) = match self.resolve_parent_fd(&new_rel) {
+            Ok(r) => r,
+            Err(e) => {
+                reply.error(errno_from_nix(e));
+                return;
+            }
+        };
 
         // Perform the rename, honouring any flags (e.g. RENAME_NOREPLACE) via
         // the renameat2 syscall so that callers get correct atomicity semantics.
-        let rename_result = if flags.is_empty() {
-            fs::rename(&old_backing, &new_backing)
-        } else {
-            let nix_flags = NixRenameFlags::from_bits_retain(flags.bits());
-            renameat2(
-                AT_FDCWD,
-                old_backing.as_path(),
-                AT_FDCWD,
-                new_backing.as_path(),
-                nix_flags,
-            )
-            .map_err(std::io::Error::from)
-        };
+        let nix_flags = NixRenameFlags::from_bits_retain(flags.bits());
+        let rename_result = renameat2(
+            old_parent_fd.as_fd(),
+            old_leaf.as_os_str(),
+            new_parent_fd.as_fd(),
+            new_leaf.as_os_str(),
+            nix_flags,
+        );
 
         match rename_result {
+            Err(e) => {
+                reply.error(errno_from_nix(e));
+            }
             Ok(()) => {
                 let mut path_map = self.path_to_inode.write().expect("Lock poisoned");
                 let mut inode_map = self.inodes.write().expect("Lock poisoned");
@@ -1146,9 +1359,6 @@ impl Filesystem for ProtectedFilesystem {
 
                 reply.ok();
             }
-            Err(e) => {
-                reply.error(Errno::from(e));
-            }
         }
     }
 
@@ -1175,10 +1385,23 @@ impl Filesystem for ProtectedFilesystem {
                 return;
             }
         };
-        let backing = self.backing_path(&rel_path);
-        match fs::read_link(&backing) {
+        let backing = self.backing_path_display(&rel_path);
+        let _ = backing;
+        let (parent_fd, leaf) = match self.resolve_parent_fd(&rel_path) {
+            Ok(r) => r,
+            Err(e) => {
+                reply.error(errno_from_nix(e));
+                return;
+            }
+        };
+        let leaf_path = if leaf.is_empty() {
+            OsString::from(".")
+        } else {
+            leaf
+        };
+        match readlinkat(parent_fd.as_fd(), leaf_path.as_os_str()) {
             Ok(target) => reply.data(target.as_os_str().as_bytes()),
-            Err(e) => reply.error(Errno::from(e)),
+            Err(e) => reply.error(errno_from_nix(e)),
         }
     }
 

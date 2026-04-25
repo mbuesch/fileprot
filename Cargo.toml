@@ -21,7 +21,7 @@ image = { version = "0.25", default-features = false, features = [ "png" ] }
 ksni = "0.3"
 libc = "0.2"
 log = "0.4"
-nix = { version = "0.31", default-features = false, features = [ "fs", "mount", "user" ] }
+nix = { version = "0.31", default-features = false, features = [ "dir", "fs", "mount", "user" ] }
 serde = { version = "1", features = [ "derive" ] }
 tokio = { version = "1", default-features = false, features = [ "rt-multi-thread", "time", "macros", "sync", "signal" ] }
 tokio-stream = "0.1"
