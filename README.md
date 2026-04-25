@@ -71,3 +71,12 @@ the request is automatically denied.
 
 The configuration file is at `/opt/fileprot/etc/fileprot/fileprotd.conf`.
 See [fileprotd.conf.example](fileprotd.conf.example) for the full annotated example.
+
+## License
+
+This application is AI generated with heavy manual modifications by
+**Michael Büsch** <m@bues.ch>
+
+Licensed under the Apache License version 2.0 or alternatively MIT or alternatively feel free to do whatever you want with this software without restriction.
+
+If you want to redistribute this software, I would like to ask you kindly to remove my name from the source code, the documentation, the build scripts and any other files beforehand.
