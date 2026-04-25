@@ -7,9 +7,13 @@ use fuser::{
     ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyIoctl, ReplyLock,
     ReplyLseek, ReplyOpen, ReplyPoll, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
+use nix::{
+    fcntl::{AT_FDCWD, RenameFlags as NixRenameFlags, renameat2},
+    unistd::{Gid, Uid, chown as nix_chown},
+};
 use std::{
     collections::HashMap,
-    ffi::{CString, OsStr},
+    ffi::OsStr,
     fs::{self, File, Metadata, OpenOptions, Permissions},
     io::{Read, Seek, SeekFrom, Write},
     os::unix::{
@@ -216,7 +220,27 @@ impl ProtectedFilesystem {
             blocks: metadata.blocks(),
             atime: metadata.accessed().unwrap_or(UNIX_EPOCH),
             mtime: metadata.modified().unwrap_or(UNIX_EPOCH),
-            ctime: UNIX_EPOCH + Duration::from_secs(metadata.ctime() as u64),
+            ctime: {
+                let secs = metadata.ctime();
+                let nsecs = metadata.ctime_nsec().max(0) as u32;
+                if secs >= 0 {
+                    UNIX_EPOCH + Duration::new(secs as u64, nsecs)
+                } else {
+                    // Pre-epoch ctime (e.g. on misconfigured filesystems): compute as
+                    // UNIX_EPOCH - |duration|.  The kernel reports (secs, nsecs) where
+                    // nsecs is always in [0, 999_999_999], so for secs=-2, nsecs=500_000_000
+                    // the true offset is -1.5 s (secs+1 whole seconds before epoch,
+                    // then 1e9-nsecs nanoseconds into that second).
+                    let (d_secs, d_nsecs) = if nsecs == 0 {
+                        ((-secs) as u64, 0u32)
+                    } else {
+                        ((-secs - 1) as u64, 1_000_000_000 - nsecs)
+                    };
+                    UNIX_EPOCH
+                        .checked_sub(Duration::new(d_secs, d_nsecs))
+                        .unwrap_or(UNIX_EPOCH)
+                }
+            },
             crtime: metadata.created().unwrap_or(UNIX_EPOCH),
             kind,
             perm: (metadata.mode() & 0o7777) as u16,
@@ -354,6 +378,15 @@ impl Filesystem for ProtectedFilesystem {
         let mut inode_map = self.inodes.write().expect("Lock poisoned");
 
         let remove = if let Some(data) = inode_map.get_mut(&ino.0) {
+            if nlookup > data.ref_count {
+                log::warn!(
+                    "forget: inode {} nlookup underflow: requested {} but ref_count is {} (mount '{}')",
+                    ino.0,
+                    nlookup,
+                    data.ref_count,
+                    self.mount_name,
+                );
+            }
             data.ref_count = data.ref_count.saturating_sub(nlookup);
             data.ref_count == 0 && ino != ROOT_INODE
         } else {
@@ -438,6 +471,19 @@ impl Filesystem for ProtectedFilesystem {
                     return;
                 }
             } else {
+                // Only regular files can be truncated via open-for-write.
+                // Directories and symlinks must not be opened this way.
+                match fs::symlink_metadata(&backing) {
+                    Ok(m) if m.is_file() => {}
+                    Ok(_) => {
+                        reply.error(Errno::EINVAL);
+                        return;
+                    }
+                    Err(e) => {
+                        reply.error(Errno::from(e));
+                        return;
+                    }
+                }
                 let file = match OpenOptions::new().write(true).open(&backing) {
                     Ok(f) => f,
                     Err(e) => {
@@ -463,18 +509,10 @@ impl Filesystem for ProtectedFilesystem {
 
         // Handle uid/gid change.
         if uid.is_some() || gid.is_some() {
-            let path_cstr = match CString::new(backing.as_os_str().as_bytes()) {
-                Ok(c) => c,
-                Err(_) => {
-                    reply.error(Errno::EINVAL);
-                    return;
-                }
-            };
-            let new_uid = uid.map(|u| u as libc::uid_t).unwrap_or(u32::MAX);
-            let new_gid = gid.map(|g| g as libc::gid_t).unwrap_or(u32::MAX);
-            let ret = unsafe { libc::chown(path_cstr.as_ptr(), new_uid, new_gid) };
-            if ret != 0 {
-                reply.error(Errno::from(std::io::Error::last_os_error()));
+            let new_uid = uid.map(Uid::from_raw);
+            let new_gid = gid.map(Gid::from_raw);
+            if let Err(e) = nix_chown(backing.as_path(), new_uid, new_gid) {
+                reply.error(Errno::from_i32(e as i32));
                 return;
             }
         }
@@ -511,33 +549,21 @@ impl Filesystem for ProtectedFilesystem {
             }
         };
 
-        let mut full_entries: Vec<(INodeNo, FileType, String)> = vec![];
-
-        // Add . and ..
-        full_entries.push((ino, FileType::Directory, ".".to_string()));
-        let parent_ino = if ino == ROOT_INODE {
-            ROOT_INODE
-        } else {
-            let parent_rel = rel_path.parent().unwrap_or(Path::new(""));
-            self.path_to_inode
-                .read()
-                .expect("Lock poisoned")
-                .get(parent_rel)
-                .map(|&v| INodeNo(v))
-                .unwrap_or(ROOT_INODE)
-        };
-        full_entries.push((parent_ino, FileType::Directory, "..".to_string()));
-
+        // Collect raw directory entries without holding any inode-table lock.
+        // Inode numbers in readdir are informational (d_ino); the kernel will
+        // call lookup() if it needs a persistent inode.  We therefore look up
+        // existing inodes under a single read lock and use INodeNo(0) for
+        // entries not yet known, avoiding per-entry write-lock acquisition and
+        // the associated stall / leak risk on EOVERFLOW.
+        struct RawEntry {
+            name: String,
+            child_rel: PathBuf,
+            file_type: FileType,
+        }
+        let mut raw: Vec<RawEntry> = vec![];
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let child_rel = rel_path.join(&name);
-            let child_ino = match self.get_or_create_inode(&child_rel) {
-                Ok(i) => i,
-                Err(e) => {
-                    reply.error(e);
-                    return;
-                }
-            };
             let file_type = match entry.file_type() {
                 Ok(ft) => {
                     if ft.is_dir() {
@@ -550,7 +576,35 @@ impl Filesystem for ProtectedFilesystem {
                 }
                 Err(_) => FileType::RegularFile,
             };
-            full_entries.push((child_ino, file_type, name));
+            raw.push(RawEntry {
+                name,
+                child_rel,
+                file_type,
+            });
+        }
+
+        // Resolve inode numbers under a single read lock snapshot.
+        let mut full_entries: Vec<(INodeNo, FileType, String)> = vec![];
+        full_entries.push((ino, FileType::Directory, ".".to_string()));
+        {
+            let path_map = self.path_to_inode.read().expect("Lock poisoned");
+            let parent_ino = if ino == ROOT_INODE {
+                ROOT_INODE
+            } else {
+                let parent_rel = rel_path.parent().unwrap_or(Path::new(""));
+                path_map
+                    .get(parent_rel)
+                    .map(|&v| INodeNo(v))
+                    .unwrap_or(ROOT_INODE)
+            };
+            full_entries.push((parent_ino, FileType::Directory, "..".to_string()));
+            for e in raw {
+                let child_ino = path_map
+                    .get(&e.child_rel)
+                    .map(|&v| INodeNo(v))
+                    .unwrap_or(INodeNo(0));
+                full_entries.push((child_ino, e.file_type, e.name));
+            }
         }
 
         for (i, (entry_ino, kind, name)) in full_entries.iter().enumerate().skip(offset as usize) {
@@ -781,7 +835,12 @@ impl Filesystem for ProtectedFilesystem {
 
         // Create the file.
         let mut opts = OpenOptions::new();
-        opts.create(true).write(true);
+        // O_EXCL: fail if the file already exists (create_new implies create).
+        if flags & libc::O_EXCL != 0 {
+            opts.create_new(true).write(true);
+        } else {
+            opts.create(true).write(true);
+        }
 
         let access_mode = flags & libc::O_ACCMODE;
         if access_mode == libc::O_RDWR || access_mode == libc::O_RDONLY {
@@ -982,7 +1041,7 @@ impl Filesystem for ProtectedFilesystem {
         name: &OsStr,
         newparent: INodeNo,
         newname: &OsStr,
-        _flags: RenameFlags,
+        flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
         if let Err(e) = validate_name(name) {
@@ -991,6 +1050,14 @@ impl Filesystem for ProtectedFilesystem {
         }
         if let Err(e) = validate_name(newname) {
             reply.error(e);
+            return;
+        }
+
+        // RENAME_EXCHANGE requires atomically swapping two existing paths, which
+        // cannot be expressed through a simple fs::rename.  Return EOPNOTSUPP so
+        // callers get a clear error rather than a silent wrong-behaviour rename.
+        if flags.contains(RenameFlags::RENAME_EXCHANGE) {
+            reply.error(Errno::EOPNOTSUPP);
             return;
         }
 
@@ -1028,7 +1095,23 @@ impl Filesystem for ProtectedFilesystem {
         let old_backing = self.backing_path(&old_rel);
         let new_backing = self.backing_path(&new_rel);
 
-        match fs::rename(&old_backing, &new_backing) {
+        // Perform the rename, honouring any flags (e.g. RENAME_NOREPLACE) via
+        // the renameat2 syscall so that callers get correct atomicity semantics.
+        let rename_result = if flags.is_empty() {
+            fs::rename(&old_backing, &new_backing)
+        } else {
+            let nix_flags = NixRenameFlags::from_bits_retain(flags.bits());
+            renameat2(
+                AT_FDCWD,
+                old_backing.as_path(),
+                AT_FDCWD,
+                new_backing.as_path(),
+                nix_flags,
+            )
+            .map_err(std::io::Error::from)
+        };
+
+        match rename_result {
             Ok(()) => {
                 let mut path_map = self.path_to_inode.write().expect("Lock poisoned");
                 let mut inode_map = self.inodes.write().expect("Lock poisoned");

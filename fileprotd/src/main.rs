@@ -4,7 +4,7 @@ use clap::Parser;
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
 use fuser::{Config as FuserConfig, MountOption, SessionACL, spawn_mount2};
 use nix::mount::{MntFlags, umount2};
-use std::{path::Path, path::PathBuf, sync::Arc};
+use std::{os::unix::fs::MetadataExt as _, path::Path, path::PathBuf, sync::Arc};
 use tokio::{
     signal::{
         ctrl_c,
@@ -150,6 +150,62 @@ async fn main() -> ah::Result<()> {
                 "Mount point is not a directory: {}",
                 mount_cfg.mountpoint().display()
             ));
+        }
+
+        // Guard against misconfiguration where the mountpoint overlaps with the
+        // backing directory - this would recursively obscure files or cause
+        // undefined FUSE behaviour.
+        {
+            let mp_meta = std::fs::metadata(mount_cfg.mountpoint()).map_err(|e| {
+                err!(
+                    "Failed to stat mount point '{}': {}",
+                    mount_cfg.mountpoint().display(),
+                    e
+                )
+            })?;
+            let bd_meta = std::fs::metadata(mount_cfg.backing_dir()).map_err(|e| {
+                err!(
+                    "Failed to stat backing dir '{}': {}",
+                    mount_cfg.backing_dir().display(),
+                    e
+                )
+            })?;
+            if mp_meta.dev() == bd_meta.dev() && mp_meta.ino() == bd_meta.ino() {
+                return Err(err!(
+                    "Mount point '{}' and backing directory '{}' are the same inode - refusing to mount",
+                    mount_cfg.mountpoint().display(),
+                    mount_cfg.backing_dir().display(),
+                ));
+            }
+            // Use canonicalized paths to catch one being a subdirectory of the other.
+            let canonical_mp = std::fs::canonicalize(mount_cfg.mountpoint()).map_err(|e| {
+                err!(
+                    "Failed to canonicalize mount point '{}': {}",
+                    mount_cfg.mountpoint().display(),
+                    e
+                )
+            })?;
+            let canonical_bd = std::fs::canonicalize(mount_cfg.backing_dir()).map_err(|e| {
+                err!(
+                    "Failed to canonicalize backing dir '{}': {}",
+                    mount_cfg.backing_dir().display(),
+                    e
+                )
+            })?;
+            if canonical_mp.starts_with(&canonical_bd) {
+                return Err(err!(
+                    "Mount point '{}' is inside backing directory '{}' - refusing to mount",
+                    mount_cfg.mountpoint().display(),
+                    mount_cfg.backing_dir().display(),
+                ));
+            }
+            if canonical_bd.starts_with(&canonical_mp) {
+                return Err(err!(
+                    "Backing directory '{}' is inside mount point '{}' - refusing to mount",
+                    mount_cfg.backing_dir().display(),
+                    mount_cfg.mountpoint().display(),
+                ));
+            }
         }
 
         log::info!(

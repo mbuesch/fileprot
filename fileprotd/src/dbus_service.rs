@@ -67,8 +67,13 @@ impl AccessControlService {
                 request_id,
                 if approved { "approved" } else { "denied" }
             );
-            if let Some(tx) = req.response_tx.take() {
-                let _ = tx.send(approved);
+            if let Some(tx) = req.response_tx.take()
+                && tx.send(approved).is_err()
+            {
+                log::warn!(
+                    "Request {}: response channel closed before send (FUSE thread already gone)",
+                    request_id
+                );
             }
             Ok(true)
         } else {
