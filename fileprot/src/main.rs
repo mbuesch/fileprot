@@ -46,11 +46,13 @@ fn main() {
                 .with_window(
                     WindowBuilder::new()
                         .with_title("fileprot - Access Requests")
+                        .with_always_on_top(false)
                         .with_inner_size(LogicalSize::new(700.0, 500.0))
                         .with_window_icon(load_window_icon())
                         .with_visible(args.visible),
                 )
-                .with_close_behaviour(WindowCloseBehaviour::WindowHides),
+                .with_close_behaviour(WindowCloseBehaviour::WindowHides)
+                .with_menu(None),
         )
         .launch(ui::App);
 }
