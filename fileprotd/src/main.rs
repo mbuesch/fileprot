@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use anyhow::{self as ah, format_err as err};
 use clap::Parser;
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
