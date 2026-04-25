@@ -1525,6 +1525,7 @@ dependencies = [
  "image",
  "ksni",
  "log",
+ "nix 0.31.2",
  "tokio",
  "tokio-stream",
  "x11rb",

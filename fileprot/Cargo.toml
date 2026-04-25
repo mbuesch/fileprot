@@ -17,6 +17,7 @@ env_logger = { workspace = true }
 image = { workspace = true }
 ksni = { workspace = true }
 log = { workspace = true }
+nix = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 x11rb = { workspace = true }

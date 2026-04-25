@@ -1,10 +1,13 @@
 #![forbid(unsafe_code)]
 
-use anyhow::{self as ah, format_err as err};
+use anyhow::{self as ah, Context as _, format_err as err};
 use clap::Parser;
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
 use fuser::{Config as FuserConfig, MountOption, SessionACL, spawn_mount2};
-use nix::mount::{MntFlags, umount2};
+use nix::{
+    mount::{MntFlags, umount2},
+    sys::prctl,
+};
 use std::{os::unix::fs::MetadataExt as _, path::Path, path::PathBuf, sync::Arc};
 use tokio::{
     signal::{
@@ -45,6 +48,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> ah::Result<()> {
+    // Prevent ptrace and core dumps.
+    prctl::set_dumpable(false).context("Failed to set PR_SET_DUMPABLE")?;
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     // Parse command-line arguments.

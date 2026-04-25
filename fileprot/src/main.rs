@@ -1,11 +1,13 @@
 #![forbid(unsafe_code)]
 
+use anyhow::{self as ah, Context as _};
 use clap::Parser;
 use dioxus::{
     LaunchBuilder,
     desktop::{Config as DesktopConfig, LogicalSize, WindowBuilder, WindowCloseBehaviour, tao},
 };
 use image::GenericImageView;
+use nix::sys::prctl;
 
 mod dbus_client;
 mod ui;
@@ -32,7 +34,10 @@ fn load_window_icon() -> Option<tao::window::Icon> {
         .ok()
 }
 
-fn main() {
+fn main() -> ah::Result<()> {
+    // Prevent ptrace and core dumps.
+    prctl::set_dumpable(false).context("Failed to set PR_SET_DUMPABLE")?;
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     // Parse command-line arguments.
@@ -57,4 +62,6 @@ fn main() {
                 .with_menu(None),
         )
         .launch(ui::App);
+
+    Ok(())
 }
