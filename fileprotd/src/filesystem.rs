@@ -27,6 +27,31 @@ use std::{
 const TTL: Duration = Duration::from_secs(1);
 const ROOT_INODE: INodeNo = INodeNo(1);
 
+/// Validate a single path-component name received from the FUSE kernel
+/// before joining it to any path.
+///
+/// Rejected names:
+/// - empty string
+/// - `.` or `..`
+/// - any name containing `/` (would escape the backing directory via
+///   `Path::join`, which replaces the base when the argument is absolute or
+///   contains a separator)
+/// - any name containing a NUL byte (would silently truncate a `CString`)
+///
+/// Even though the stock Linux FUSE module filters most of these cases
+/// before calling the filesystem driver, the driver must not rely on that
+/// behaviour for safety.
+fn validate_name(name: &OsStr) -> Result<(), Errno> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes == b"." || bytes == b".." {
+        return Err(Errno::EINVAL);
+    }
+    if bytes.contains(&b'/') || bytes.contains(&b'\0') {
+        return Err(Errno::EINVAL);
+    }
+    Ok(())
+}
+
 /// Data associated with a single inode.
 #[derive(Debug, Clone)]
 struct InodeData {
@@ -258,6 +283,11 @@ impl ProtectedFilesystem {
 
 impl Filesystem for ProtectedFilesystem {
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        if let Err(e) = validate_name(name) {
+            reply.error(e);
+            return;
+        }
+
         let parent_path = match self.get_rel_path(parent) {
             Some(p) => p,
             None => {
@@ -396,7 +426,13 @@ impl Filesystem for ProtectedFilesystem {
 
         // Handle uid/gid change.
         if uid.is_some() || gid.is_some() {
-            let path_cstr = CString::new(backing.as_os_str().as_bytes()).unwrap();
+            let path_cstr = match CString::new(backing.as_os_str().as_bytes()) {
+                Ok(c) => c,
+                Err(_) => {
+                    reply.error(Errno::EINVAL);
+                    return;
+                }
+            };
             let new_uid = uid.map(|u| u as libc::uid_t).unwrap_or(u32::MAX);
             let new_gid = gid.map(|g| g as libc::gid_t).unwrap_or(u32::MAX);
             let ret = unsafe { libc::chown(path_cstr.as_ptr(), new_uid, new_gid) };
@@ -676,6 +712,11 @@ impl Filesystem for ProtectedFilesystem {
         flags: i32,
         reply: ReplyCreate,
     ) {
+        if let Err(e) = validate_name(name) {
+            reply.error(e);
+            return;
+        }
+
         let parent_path = match self.get_rel_path(parent) {
             Some(p) => p,
             None => {
@@ -742,6 +783,11 @@ impl Filesystem for ProtectedFilesystem {
     }
 
     fn unlink(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        if let Err(e) = validate_name(name) {
+            reply.error(e);
+            return;
+        }
+
         let parent_path = match self.get_rel_path(parent) {
             Some(p) => p,
             None => {
@@ -789,6 +835,11 @@ impl Filesystem for ProtectedFilesystem {
         _umask: u32,
         reply: ReplyEntry,
     ) {
+        if let Err(e) = validate_name(name) {
+            reply.error(e);
+            return;
+        }
+
         let parent_path = match self.get_rel_path(parent) {
             Some(p) => p,
             None => {
@@ -837,6 +888,11 @@ impl Filesystem for ProtectedFilesystem {
     }
 
     fn rmdir(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        if let Err(e) = validate_name(name) {
+            reply.error(e);
+            return;
+        }
+
         let parent_path = match self.get_rel_path(parent) {
             Some(p) => p,
             None => {
@@ -885,6 +941,15 @@ impl Filesystem for ProtectedFilesystem {
         _flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
+        if let Err(e) = validate_name(name) {
+            reply.error(e);
+            return;
+        }
+        if let Err(e) = validate_name(newname) {
+            reply.error(e);
+            return;
+        }
+
         let parent_path = match self.get_rel_path(parent) {
             Some(p) => p,
             None => {
@@ -924,12 +989,14 @@ impl Filesystem for ProtectedFilesystem {
                 let mut path_map = self.path_to_inode.write().expect("Lock poisoned");
                 if let Some(ino) = path_map.remove(&old_rel) {
                     path_map.insert(new_rel.clone(), ino);
-                    self.inodes
+                    if let Some(data) = self
+                        .inodes
                         .write()
                         .expect("Lock poisoned")
                         .get_mut(&ino)
-                        .unwrap()
-                        .rel_path = new_rel;
+                    {
+                        data.rel_path = new_rel;
+                    }
                 }
                 reply.ok();
             }
