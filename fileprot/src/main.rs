@@ -2,9 +2,8 @@
 
 use anyhow::{self as ah, Context as _};
 use clap::Parser;
-use dioxus::{
-    LaunchBuilder,
-    desktop::{Config as DesktopConfig, LogicalSize, WindowBuilder, WindowCloseBehaviour, tao},
+use dioxus::desktop::{
+    Config as DesktopConfig, LogicalSize, WindowBuilder, WindowCloseBehaviour, tao,
 };
 use image::GenericImageView;
 use nix::sys::prctl;
@@ -46,8 +45,12 @@ fn main() -> ah::Result<()> {
     // Spawn the tray icon via the StatusNotifierItem D-Bus protocol.
     ui::spawn_tray();
 
-    // Launch Dioxus desktop app.
-    LaunchBuilder::desktop()
+    #[cfg(target_os = "android")]
+    let builder = dioxus::LaunchBuilder::mobile();
+    #[cfg(not(target_os = "android"))]
+    let builder = dioxus::LaunchBuilder::desktop();
+
+    builder
         .with_cfg(
             DesktopConfig::new()
                 .with_window(
