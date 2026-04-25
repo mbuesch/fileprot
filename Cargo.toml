@@ -30,3 +30,13 @@ x11rb = { version = "0.13", default-features = false }
 zbus = { version = "5.14", default-features = false, features = [ "tokio" ] }
 
 fileprot-common = { path = "./fileprot-common" }
+
+[profile.dev]
+debug = "limited"
+panic = "abort"
+
+[profile.release]
+lto = "fat"
+panic = "abort"
+strip = "symbols"
+overflow-checks = true
