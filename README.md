@@ -5,6 +5,8 @@ Simple file protection utility for Linux.
 fileprot mounts one or more FUSE filesystems that intercept every file access.
 When an application tries to read, write, create, delete, rename, change attributes of, or make a directory in a protected mount, the operation is blocked until the user explicitly approves or rejects it through a desktop tray application.
 
+![Architecture](assets/architecture.svg)
+
 ## Components
 
 | Binary | Purpose |
@@ -58,7 +60,7 @@ protected file, a request will appear in the GUI window showing:
 - **PID** - process ID of the requesting application
 - **File path** - the protected file being accessed
 - **Application** - the executable path of the requesting application
-- **Operation** - read, write, create, or delete
+- **Operation** - read, write, create, delete, rename, mkdir, or setattr
 
 Click **Approve** to allow the operation or **Deny** to block it.
 
