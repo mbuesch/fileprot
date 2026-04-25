@@ -9,6 +9,12 @@ ExecStart=/opt/fileprot/bin/fileprotd
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
+MountFlags=shared
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_CHOWN CAP_FOWNER
 
 [Install]
 WantedBy=multi-user.target
