@@ -1,8 +1,14 @@
 use crate::access_control::AccessRequest;
 use anyhow::{self as ah, Context, format_err as err};
 use fileprot_common::{DBUS_BUS_NAME, DBUS_OBJECT_PATH, dbus_interface::AccessControlRequest};
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use std::{
+    collections::HashMap,
+    fs,
+    os::unix::fs::MetadataExt,
+    path::PathBuf,
+    sync::{Arc, mpsc as std_mpsc},
+};
+use tokio::sync::{Mutex, mpsc};
 use zbus::{Connection, connection, interface, object_server::SignalEmitter};
 
 /// Whether to verify the identity of the GUI peer on D-Bus.
@@ -17,7 +23,7 @@ pub enum PeerVerification {
 /// A pending request waiting for user response.
 struct PendingEntry {
     request: AccessControlRequest,
-    response_tx: Option<oneshot::Sender<bool>>,
+    response_tx: Option<std_mpsc::SyncSender<bool>>,
 }
 
 /// D-Bus service exposed by the daemon for the GUI to interact with.
@@ -108,19 +114,34 @@ impl AccessControlService {
             .await
             .context("failed to get peer PID")?;
 
-        // Read the caller's executable path from /proc.
-        let exe_path = fs::read_link(format!("/proc/{}/exe", pid))
-            .with_context(|| format!("failed to read /proc/{}/exe", pid))?;
-
-        if exe_path != self.gui_binary_path {
-            return Err(err!(
-                "peer binary '{}' does not match expected '{}'",
-                exe_path.display(),
+        // Verify the peer's executable against the configured GUI binary by
+        // comparing (device, inode).
+        let proc_exe = format!("/proc/{}/exe", pid);
+        let proc_meta =
+            fs::metadata(&proc_exe).with_context(|| format!("failed to stat {}", proc_exe))?;
+        let gui_meta = fs::metadata(&self.gui_binary_path).with_context(|| {
+            format!(
+                "failed to stat GUI binary '{}'",
                 self.gui_binary_path.display()
+            )
+        })?;
+
+        if proc_meta.dev() != gui_meta.dev() || proc_meta.ino() != gui_meta.ino() {
+            return Err(err!(
+                "peer binary (dev={}, ino={}) does not match GUI binary '{}' (dev={}, ino={})",
+                proc_meta.dev(),
+                proc_meta.ino(),
+                self.gui_binary_path.display(),
+                gui_meta.dev(),
+                gui_meta.ino(),
             ));
         }
 
-        log::debug!("Peer verified: PID {} exe {:?}", pid, exe_path);
+        log::debug!(
+            "Peer verified: PID {} matches GUI binary '{}'",
+            pid,
+            self.gui_binary_path.display()
+        );
         Ok(())
     }
 }

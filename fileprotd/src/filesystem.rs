@@ -142,7 +142,7 @@ impl ProtectedFilesystem {
     /// Get or create an inode for a relative path.
     /// Returns Err(Errno::EOVERFLOW) if incrementing or allocating the inode would overflow.
     fn get_or_create_inode(&self, rel_path: &Path) -> Result<INodeNo, Errno> {
-        // Check if inode already exists.
+        // Fast path: check under read lock.
         {
             let path_map = self.path_to_inode.read().expect("Lock poisoned");
             if let Some(&ino) = path_map.get(rel_path) {
@@ -159,7 +159,28 @@ impl ProtectedFilesystem {
             }
         }
 
+        // Slow path: re-check under a write lock on path_to_inode before inserting.
+        // Without this re-check, two concurrent lookups for the same new path both
+        // miss the read-lock check above, both allocate a fresh inode number, and
+        // both insert - the second path_map.insert then silently overwrites the first
+        // entry in path_to_inode, leaving the first inode orphaned in inodes (present
+        // with no reverse mapping) while already returned to the kernel.
+        let mut path_map = self.path_to_inode.write().expect("Lock poisoned");
+        if let Some(&ino) = path_map.get(rel_path) {
+            let mut inode_map = self.inodes.write().expect("Lock poisoned");
+            if let Some(data) = inode_map.get_mut(&ino) {
+                if let Some(new_ref_count) = data.ref_count.checked_add(1) {
+                    data.ref_count = new_ref_count;
+                } else {
+                    return Err(Errno::EOVERFLOW);
+                }
+            }
+            return Ok(INodeNo(ino));
+        }
+
         // Allocate new inode, ensuring we do not overflow the counter.
+        // path_map write lock is held from the re-check above through the insert
+        // below, so no concurrent lookup can sneak in between.
         let ino = self
             .next_inode
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |curr| {
@@ -168,7 +189,6 @@ impl ProtectedFilesystem {
             .map_err(|_| Errno::EOVERFLOW)?;
 
         let mut inode_map = self.inodes.write().expect("Lock poisoned");
-        let mut path_map = self.path_to_inode.write().expect("Lock poisoned");
         inode_map.insert(
             ino,
             InodeData {

@@ -7,10 +7,16 @@ use std::{
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
+        mpsc as std_mpsc,
     },
     time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, oneshot};
+
+/// Maximum number of entries in the per-process approval cache.
+/// When the cache is full and all entries are still live, new approvals are
+/// not cached (the process will simply be prompted again on its next access).
+const APPROVAL_CACHE_MAX_ENTRIES: usize = 1024;
 
 /// Returned when the access-request queue is at capacity.
 #[derive(Debug)]
@@ -28,7 +34,10 @@ impl std::error::Error for QueueFullError {}
 /// asking the user for approval.
 pub struct AccessRequest {
     pub request: AccessControlRequest,
-    pub response_tx: oneshot::Sender<bool>,
+    /// Sender half of the response channel. The D-Bus handler calls
+    /// `send(approved)` on this; it is a std (non-async) Sender so it is safe
+    /// to call from async code without blocking the executor.
+    pub response_tx: std_mpsc::SyncSender<bool>,
     /// Receiver half of a cancellation pair. The FUSE thread holds the sender
     /// side alive for the entire duration of `request_access`. When the
     /// function returns (timeout, response received, or error), the sender is
@@ -228,6 +237,22 @@ impl AccessController {
         match &mut *cache {
             CacheState::Coupled(map) => {
                 if let Some(id) = identity {
+                    // Enforce a size cap to prevent unbounded growth from many
+                    // short-lived processes that each get approved once.
+                    if map.len() >= APPROVAL_CACHE_MAX_ENTRIES {
+                        // Evict all expired entries first.
+                        map.retain(|_, approved_at| approved_at.elapsed() < self.approval_ttl);
+                        // If still at capacity, skip caching; the process will
+                        // simply be prompted again on its next access.
+                        if map.len() >= APPROVAL_CACHE_MAX_ENTRIES {
+                            log::warn!(
+                                "Approval cache at capacity ({}), not caching approval for pid={}",
+                                APPROVAL_CACHE_MAX_ENTRIES,
+                                id.pid,
+                            );
+                            return;
+                        }
+                    }
                     map.insert(id, Instant::now());
                 }
             }
@@ -255,7 +280,12 @@ impl AccessController {
         }
 
         let req_id = format!("req-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-        let (response_tx, mut response_rx) = oneshot::channel();
+        // Use a std (non-async) sync_channel with a bound of 1.
+        // Sender::send is non-blocking for a bound-1 channel that has not been
+        // sent to yet, and it is safe to call from async code without touching
+        // the tokio executor. The FUSE thread blocks on recv_timeout, which is
+        // a plain OS-level block that needs no tokio runtime context.
+        let (response_tx, response_rx) = std_mpsc::sync_channel(1);
         // The sender side is held alive for the entire wait loop. When this
         // function returns (for any reason), `_cancel_tx` is dropped, which
         // wakes the D-Bus cleanup task to evict the pending-map entry.
@@ -290,30 +320,27 @@ impl AccessController {
             }
         }
 
-        // Block waiting for response with timeout.
-        let timeout = self.timeout;
-        let start = Instant::now();
-
-        loop {
-            if timeout.checked_sub(start.elapsed()).is_none() {
-                log::warn!("Access request {} timed out after {:?}", req_id, timeout);
-                return Ok(false);
+        // Block the FUSE thread waiting for a response. recv_timeout is a
+        // plain OS-level blocking call that works from any thread without
+        // requiring a tokio runtime context.
+        match response_rx.recv_timeout(self.timeout) {
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                log::warn!(
+                    "Access request {} timed out after {:?}",
+                    req_id,
+                    self.timeout
+                );
+                Ok(false)
             }
-
-            match response_rx.try_recv() {
-                Ok(approved) => {
-                    if approved {
-                        self.cache_approval(Some(identity));
-                    }
-                    return Ok(approved);
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                log::error!("Access request {} channel closed", req_id);
+                Ok(false)
+            }
+            Ok(approved) => {
+                if approved {
+                    self.cache_approval(Some(identity));
                 }
-                Err(oneshot::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(oneshot::error::TryRecvError::Closed) => {
-                    log::error!("Access request {} channel closed", req_id);
-                    return Ok(false);
-                }
+                Ok(approved)
             }
         }
     }
