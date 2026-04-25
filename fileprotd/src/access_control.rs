@@ -1,4 +1,4 @@
-use anyhow::{self as ah, Context};
+use anyhow::{self as ah};
 use fileprot_common::{Operation, dbus_interface::AccessControlRequest};
 use std::{
     collections::HashMap,
@@ -12,11 +12,29 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+/// Returned when the access-request queue is at capacity.
+#[derive(Debug)]
+pub struct QueueFullError;
+
+impl std::fmt::Display for QueueFullError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "access request queue full")
+    }
+}
+
+impl std::error::Error for QueueFullError {}
+
 /// A request from the FUSE filesystem to the D-Bus service,
 /// asking the user for approval.
 pub struct AccessRequest {
     pub request: AccessControlRequest,
     pub response_tx: oneshot::Sender<bool>,
+    /// Receiver half of a cancellation pair. The FUSE thread holds the sender
+    /// side alive for the entire duration of `request_access`. When the
+    /// function returns (timeout, response received, or error), the sender is
+    /// dropped, completing this receiver. The D-Bus service watches this to
+    /// evict the corresponding pending-map entry.
+    pub cancel_rx: oneshot::Receiver<()>,
 }
 
 /// Composite identity of a process, used as the approval cache key.
@@ -237,6 +255,10 @@ impl AccessController {
 
         let req_id = format!("req-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (response_tx, mut response_rx) = oneshot::channel();
+        // The sender side is held alive for the entire wait loop. When this
+        // function returns (for any reason), `_cancel_tx` is dropped, which
+        // wakes the D-Bus cleanup task to evict the pending-map entry.
+        let (_cancel_tx, cancel_rx) = oneshot::channel::<()>();
 
         let request = AccessRequest {
             request: AccessControlRequest {
@@ -247,12 +269,25 @@ impl AccessController {
                 operation: operation.to_string(),
             },
             response_tx,
+            cancel_rx,
         };
 
-        // Send request to D-Bus service (blocking_send is safe from non-tokio threads).
-        self.request_tx
-            .blocking_send(request)
-            .context("D-Bus service channel closed")?;
+        // Send the request to the D-Bus service. Use try_send so that a full
+        // queue never blocks FUSE worker threads (which could deadlock all
+        // protected mounts).
+        match self.request_tx.try_send(request) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                log::warn!(
+                    "Access request queue full, temporarily rejecting pid={}",
+                    pid
+                );
+                return Err(ah::anyhow!(QueueFullError));
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(ah::anyhow!("D-Bus service channel closed"));
+            }
+        }
 
         // Block waiting for response with timeout.
         let timeout = self.timeout;

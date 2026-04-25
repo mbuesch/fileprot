@@ -152,6 +152,7 @@ pub async fn start_dbus_service(
     tokio::spawn(async move {
         while let Some(request) = request_rx.recv().await {
             let info = request.request;
+            let cancel_rx = request.cancel_rx;
 
             // Add to pending list.
             {
@@ -192,6 +193,25 @@ pub async fn start_dbus_service(
                 info.app_name,
                 info.operation
             );
+
+            // Spawn a lightweight task that removes the pending entry once the
+            // FUSE thread drops its cancel_tx (i.e. request_access returned,
+            // whether by timeout, response, or error). This prevents stale
+            // entries from accumulating in the pending map when requests time
+            // out without a user response.
+            let pending_clone = Arc::clone(&pending);
+            let id_clone = info.id.clone();
+            tokio::spawn(async move {
+                // Completes when cancel_tx is dropped (any return path).
+                let _ = cancel_rx.await;
+                let mut map = pending_clone.lock().await;
+                if map.remove(&id_clone).is_some() {
+                    log::info!(
+                        "Request {} removed from pending after FUSE thread returned",
+                        id_clone
+                    );
+                }
+            });
         }
         log::info!("Request channel closed, D-Bus service shutting down");
     });

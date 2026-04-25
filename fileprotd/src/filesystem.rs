@@ -1,4 +1,4 @@
-use crate::access_control::AccessController;
+use crate::access_control::{AccessController, QueueFullError};
 use fileprot_common::{Operation, resolve_app_name};
 use fuser::{
     AccessFlags, BsdFileFlags, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
@@ -227,17 +227,30 @@ impl ProtectedFilesystem {
             operation
         );
 
-        match self
-            .access_control
-            .request_access(pid, uid, display_path, app_name, operation)
-        {
+        match self.access_control.request_access(
+            pid,
+            uid,
+            display_path.clone(),
+            app_name,
+            operation,
+        ) {
             Ok(approved) => {
                 log::info!("Access {}", if approved { "APPROVED" } else { "DENIED" });
                 Ok(approved)
             }
             Err(e) => {
-                log::error!("Access request failed: {}. Denying.", e);
-                Ok(false)
+                if e.is::<QueueFullError>() {
+                    log::warn!(
+                        "Access request queue full: pid={} path='{}' op={} - returning EBUSY",
+                        pid,
+                        display_path,
+                        operation
+                    );
+                    Err(Errno::EBUSY)
+                } else {
+                    log::error!("Access request failed: {}. Denying.", e);
+                    Ok(false)
+                }
             }
         }
     }
