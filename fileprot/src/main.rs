@@ -33,6 +33,35 @@ fn load_window_icon() -> Option<tao::window::Icon> {
         .ok()
 }
 
+async fn async_main(args: Args) -> ah::Result<()> {
+    // Spawn the tray icon via the StatusNotifierItem D-Bus protocol.
+    ui::spawn_tray();
+
+    #[cfg(target_os = "android")]
+    let builder = dioxus::LaunchBuilder::mobile();
+    #[cfg(not(target_os = "android"))]
+    let builder = dioxus::LaunchBuilder::desktop();
+
+    let config = DesktopConfig::new()
+        .with_window(
+            WindowBuilder::new()
+                .with_title("fileprot - Access Requests")
+                .with_always_on_top(false)
+                .with_inner_size(LogicalSize::new(700.0, 500.0))
+                .with_window_icon(load_window_icon())
+                .with_visible(args.visible),
+        )
+        .with_close_behaviour(WindowCloseBehaviour::WindowHides)
+        .with_menu(None);
+
+    tokio::task::unconstrained(async move {
+        builder.with_cfg(config).launch(ui::App);
+    })
+    .await;
+
+    Ok(())
+}
+
 fn main() -> ah::Result<()> {
     // Prevent ptrace and core dumps.
     prctl::set_dumpable(false).context("Failed to set PR_SET_DUMPABLE")?;
@@ -42,29 +71,11 @@ fn main() -> ah::Result<()> {
     // Parse command-line arguments.
     let args = Args::parse();
 
-    // Spawn the tray icon via the StatusNotifierItem D-Bus protocol.
-    ui::spawn_tray();
-
-    #[cfg(target_os = "android")]
-    let builder = dioxus::LaunchBuilder::mobile();
-    #[cfg(not(target_os = "android"))]
-    let builder = dioxus::LaunchBuilder::desktop();
-
-    builder
-        .with_cfg(
-            DesktopConfig::new()
-                .with_window(
-                    WindowBuilder::new()
-                        .with_title("fileprot - Access Requests")
-                        .with_always_on_top(false)
-                        .with_inner_size(LogicalSize::new(700.0, 500.0))
-                        .with_window_icon(load_window_icon())
-                        .with_visible(args.visible),
-                )
-                .with_close_behaviour(WindowCloseBehaviour::WindowHides)
-                .with_menu(None),
-        )
-        .launch(ui::App);
-
-    Ok(())
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .context("Failed to build Tokio runtime")?
+        .block_on(async_main(args))
+        .context("Tokio runtime init error")
 }
