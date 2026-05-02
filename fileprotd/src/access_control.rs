@@ -142,6 +142,17 @@ enum CachedApproval {
     NotApproved,
 }
 
+/// Returns the set of operations to store in the cache when `op` is approved.
+fn implied_ops(op: Operation) -> &'static [Operation] {
+    match op {
+        Operation::Read => &[Operation::Read],
+        Operation::Write => &[Operation::Write, Operation::Read],
+        Operation::Create => &[Operation::Create, Operation::Write, Operation::Read],
+        Operation::SetAttr => &[Operation::SetAttr],
+        Operation::Delete | Operation::Rename | Operation::Mkdir => &[],
+    }
+}
+
 /// Handle held by the FUSE filesystem to send access requests.
 /// Bridges synchronous FUSE threads to the async D-Bus service.
 #[derive(Debug)]
@@ -235,9 +246,11 @@ impl AccessController {
     /// Insert or refresh an approval entry.
     /// `identity` is only used in coupled mode.
     fn cache_approval(&self, identity: Option<ProcessIdentity>, operation: Operation) {
-        if self.approval_ttl.is_zero() {
+        let ops = implied_ops(operation);
+        if self.approval_ttl.is_zero() || ops.is_empty() {
             return;
         }
+        let now = Instant::now();
         let mut cache = self.approval_cache.lock().expect("Lock poisoned");
         match &mut *cache {
             CacheState::Coupled(map) => {
@@ -258,11 +271,15 @@ impl AccessController {
                             return;
                         }
                     }
-                    map.insert((id, operation), Instant::now());
+                    for &op in ops {
+                        map.insert((id.clone(), op), now);
+                    }
                 }
             }
             CacheState::Uncoupled(map) => {
-                map.insert(operation, Instant::now());
+                for &op in ops {
+                    map.insert(op, now);
+                }
             }
         }
     }
