@@ -9,8 +9,14 @@ use fuser::{
 };
 use nix::{
     fcntl::{AtFlags, OFlag, RenameFlags as NixRenameFlags, openat, readlinkat, renameat2},
-    sys::stat::{FchmodatFlags, FileStat, Mode, SFlag, fchmodat, fstatat, mkdirat},
-    unistd::{Gid, Uid, UnlinkatFlags, dup, fchownat, unlinkat},
+    sys::{
+        stat::{
+            FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags, fchmodat, fstatat, futimens,
+            mkdirat, utimensat,
+        },
+        time::TimeSpec,
+    },
+    unistd::{Gid, Uid, UnlinkatFlags, dup, dup3, fchownat, unlinkat},
 };
 use std::{
     collections::HashMap,
@@ -60,6 +66,19 @@ fn validate_name(name: &OsStr) -> Result<(), Errno> {
         return Err(Errno::EINVAL);
     }
     Ok(())
+}
+
+/// Convert a FUSE `TimeOrNow` (or `None` meaning "do not change") to a `TimeSpec`
+/// suitable for `utimensat`/`futimens`.
+fn time_or_now_to_timespec(t: Option<TimeOrNow>) -> TimeSpec {
+    match t {
+        Some(TimeOrNow::SpecificTime(sys_time)) => match sys_time.duration_since(UNIX_EPOCH) {
+            Ok(d) => TimeSpec::new(d.as_secs() as i64, d.subsec_nanos() as i64),
+            Err(_) => TimeSpec::new(0, 0),
+        },
+        Some(TimeOrNow::Now) => TimeSpec::UTIME_NOW,
+        None => TimeSpec::UTIME_OMIT,
+    }
 }
 
 /// Data associated with a single inode.
@@ -180,7 +199,8 @@ impl ProtectedFilesystem {
             .collect();
 
         // Dup the backing dir fd so we can close it independently.
-        let base_fd = dup(self.backing_dir_fd.as_fd())?;
+        let mut base_fd = dup(self.backing_dir_fd.as_fd())?;
+        dup3(self.backing_dir_fd.as_fd(), &mut base_fd, OFlag::O_CLOEXEC)?;
 
         if components.is_empty() {
             // Caller wants the root itself; return backing dir fd + empty name.
@@ -541,8 +561,8 @@ impl Filesystem for ProtectedFilesystem {
         uid: Option<u32>,
         gid: Option<u32>,
         size: Option<u64>,
-        _atime: Option<TimeOrNow>,
-        _mtime: Option<TimeOrNow>,
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
         _ctime: Option<SystemTime>,
         fh: Option<FuseFileHandle>,
         _crtime: Option<SystemTime>,
@@ -672,6 +692,46 @@ impl Filesystem for ProtectedFilesystem {
             ) {
                 reply.error(errno_from_nix(e));
                 return;
+            }
+        }
+
+        // Handle atime/mtime change.
+        // ctime cannot be set directly on Linux (kernel manages it); ignore _ctime.
+        // BSD flags (_flags, _crtime, _chgtime, _bkuptime) are not applicable on Linux; ignore.
+        if atime.is_some() || mtime.is_some() {
+            let ts_atime = time_or_now_to_timespec(atime);
+            let ts_mtime = time_or_now_to_timespec(mtime);
+            if let Some(fh_id) = fh {
+                let files = self.open_files.read().expect("Lock poisoned");
+                if let Some(handle) = files.get(&fh_id.0)
+                    && let Err(e) = futimens(handle.file.as_fd(), &ts_atime, &ts_mtime)
+                {
+                    reply.error(errno_from_nix(e));
+                    return;
+                }
+            } else {
+                let (parent_fd, leaf) = match self.resolve_parent_fd(&rel_path) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        reply.error(errno_from_nix(e));
+                        return;
+                    }
+                };
+                let leaf_path = if leaf.is_empty() {
+                    OsString::from(".")
+                } else {
+                    leaf
+                };
+                if let Err(e) = utimensat(
+                    parent_fd.as_fd(),
+                    leaf_path.as_os_str(),
+                    &ts_atime,
+                    &ts_mtime,
+                    UtimensatFlags::NoFollowSymlink,
+                ) {
+                    reply.error(errno_from_nix(e));
+                    return;
+                }
             }
         }
 
@@ -1008,16 +1068,20 @@ impl Filesystem for ProtectedFilesystem {
 
         // Create the file using openat with O_NOFOLLOW to prevent following
         // symlinks in the leaf component.
-        let mut create_flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_CLOEXEC;
+        // Start with O_CREAT | O_CLOEXEC and apply the caller's exact access
+        // mode so we never upgrade O_RDONLY to O_RDWR.
+        let mut create_flags = OFlag::O_CREAT | OFlag::O_CLOEXEC;
+        let access_mode = flags & libc::O_ACCMODE;
+        if access_mode == libc::O_RDONLY {
+            create_flags |= OFlag::O_RDONLY;
+        } else if access_mode == libc::O_WRONLY {
+            create_flags |= OFlag::O_WRONLY;
+        } else {
+            // O_RDWR or unrecognised - default to O_RDWR.
+            create_flags |= OFlag::O_RDWR;
+        }
         if flags & libc::O_EXCL != 0 {
             create_flags |= OFlag::O_EXCL;
-        }
-        let access_mode = flags & libc::O_ACCMODE;
-        if access_mode == libc::O_RDWR || access_mode == libc::O_RDONLY {
-            create_flags |= OFlag::O_RDONLY;
-            // O_RDWR = O_RDONLY | O_WRONLY; nix OFlag handles this.
-            create_flags &= !OFlag::O_WRONLY;
-            create_flags |= OFlag::O_RDWR;
         }
         if flags & libc::O_TRUNC != 0 {
             create_flags |= OFlag::O_TRUNC;

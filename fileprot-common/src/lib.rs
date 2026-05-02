@@ -23,7 +23,7 @@ pub const DEFAULT_CONFIG_PATH: &str = "/opt/fileprot/etc/fileprot/fileprotd.conf
 pub const DEFAULT_BACKING_BASE_DIR: &str = "/opt/fileprot/var/lib/fileprot-backing";
 
 /// Operation types for access control requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Operation {
     Read,
     Write,
