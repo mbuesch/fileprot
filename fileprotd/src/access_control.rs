@@ -146,10 +146,16 @@ enum CachedApproval {
 fn implied_ops(op: Operation) -> &'static [Operation] {
     match op {
         Operation::Read => &[Operation::Read],
-        Operation::Write => &[Operation::Write, Operation::Read],
-        Operation::Create => &[Operation::Create, Operation::Write, Operation::Read],
+        Operation::Write => &[Operation::Write, Operation::Read, Operation::SetAttr],
+        Operation::Create => &[
+            Operation::Create,
+            Operation::Write,
+            Operation::Read,
+            Operation::SetAttr,
+        ],
         Operation::SetAttr => &[Operation::SetAttr],
-        Operation::Delete | Operation::Rename | Operation::Mkdir => &[],
+        Operation::Mkdir => &[Operation::SetAttr],
+        Operation::Delete | Operation::Rename => &[],
     }
 }
 
