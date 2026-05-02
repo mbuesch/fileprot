@@ -46,15 +46,7 @@ struct Args {
     no_verify_peer_uid: bool,
 }
 
-#[tokio::main]
-async fn main() -> ah::Result<()> {
-    // Prevent ptrace and core dumps.
-    prctl::set_dumpable(false).context("Failed to set PR_SET_DUMPABLE")?;
-
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
-    // Parse command-line arguments.
-    let args = Args::parse();
+async fn async_main(args: Args) -> ah::Result<()> {
     // Determine config path from command-line argument or default.
     let config_path = args
         .config
@@ -292,4 +284,26 @@ async fn main() -> ah::Result<()> {
     }
 
     Ok(())
+}
+
+fn main() -> ah::Result<()> {
+    // Prevent ptrace and core dumps.
+    prctl::set_dumpable(false).context("Failed to set PR_SET_DUMPABLE")?;
+    // Disable performance counters.
+    prctl::task_perf_events_disable().context("Failed to set PR_TASK_PERF_EVENTS_DISABLE")?;
+    // Disable privilege escalation via execve.
+    prctl::set_no_new_privs().context("Failed to set PR_SET_NO_NEW_PRIVS")?;
+
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Parse command-line arguments.
+    let args = Args::parse();
+
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .context("Failed to build Tokio runtime")?
+        .block_on(async_main(args))
+        .context("Tokio runtime init error")
 }

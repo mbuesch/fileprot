@@ -65,6 +65,10 @@ async fn async_main(args: Args) -> ah::Result<()> {
 fn main() -> ah::Result<()> {
     // Prevent ptrace and core dumps.
     prctl::set_dumpable(false).context("Failed to set PR_SET_DUMPABLE")?;
+    // Disable performance counters.
+    prctl::task_perf_events_disable().context("Failed to set PR_TASK_PERF_EVENTS_DISABLE")?;
+    // Disable privilege escalation via execve.
+    prctl::set_no_new_privs().context("Failed to set PR_SET_NO_NEW_PRIVS")?;
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
