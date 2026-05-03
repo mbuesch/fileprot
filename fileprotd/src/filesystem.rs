@@ -89,6 +89,26 @@ fn time_or_now_to_timespec(t: Option<TimeOrNow>) -> TimeSpec {
     }
 }
 
+fn ts_to_systime(secs: i64, nsecs: i64) -> std::time::SystemTime {
+    let nsecs = nsecs.max(0) as u32;
+    if secs >= 0 {
+        UNIX_EPOCH + Duration::new(secs as u64, nsecs)
+    } else {
+        // Pre-epoch timestamp: compute as UNIX_EPOCH - |duration|.
+        // The kernel reports (secs, nsecs) where nsecs is always in
+        // [0, 999_999_999], so for secs=-2, nsecs=500_000_000 the
+        // true offset is -1.5 s.
+        let (d_secs, d_nsecs) = if nsecs == 0 {
+            ((secs.saturating_neg()) as u64, 0u32)
+        } else {
+            ((secs.saturating_neg().saturating_sub(1)) as u64, 1_000_000_000 - nsecs)
+        };
+        UNIX_EPOCH
+            .checked_sub(Duration::new(d_secs, d_nsecs))
+            .unwrap_or(UNIX_EPOCH)
+    }
+}
+
 /// Data associated with a single inode.
 #[derive(Debug, Clone)]
 struct InodeData {
@@ -355,26 +375,6 @@ impl ProtectedFilesystem {
         } else {
             FileType::RegularFile
         };
-
-        fn ts_to_systime(secs: i64, nsecs: i64) -> std::time::SystemTime {
-            let nsecs = nsecs.max(0) as u32;
-            if secs >= 0 {
-                UNIX_EPOCH + Duration::new(secs as u64, nsecs)
-            } else {
-                // Pre-epoch timestamp: compute as UNIX_EPOCH - |duration|.
-                // The kernel reports (secs, nsecs) where nsecs is always in
-                // [0, 999_999_999], so for secs=-2, nsecs=500_000_000 the
-                // true offset is -1.5 s.
-                let (d_secs, d_nsecs) = if nsecs == 0 {
-                    ((-secs) as u64, 0u32)
-                } else {
-                    ((-secs - 1) as u64, 1_000_000_000 - nsecs)
-                };
-                UNIX_EPOCH
-                    .checked_sub(Duration::new(d_secs, d_nsecs))
-                    .unwrap_or(UNIX_EPOCH)
-            }
-        }
 
         FileAttr {
             ino,
