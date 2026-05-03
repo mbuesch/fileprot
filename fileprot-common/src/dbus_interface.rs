@@ -2,13 +2,6 @@
 //!
 //! The daemon exposes the `ch.bues.fileprot.AccessControl` interface on
 //! `ch.bues.fileprot.Daemon` at `/ch/bues/fileprot/Daemon`.
-//!
-//! Methods:
-//!   GetPendingRequests() -> Vec<(id, pid, path, app_name, operation)>
-//!   RespondToRequest(request_id, approved) -> bool
-//!
-//! Signals:
-//!   NewRequest(request_id)  -- ID only; GUI calls GetPendingRequests for the UID-filtered payload
 
 use serde::{Deserialize, Serialize};
 use zbus::{proxy, zvariant::Type};
