@@ -234,6 +234,9 @@ impl AccessController {
                 }
             }
             CacheState::Uncoupled(map) => {
+                // Evict expired entries from the cache.
+                map.retain(|_, approved_at| approved_at.elapsed() < self.approval_ttl);
+
                 // Check if the (path, operation)-scoped approval is still valid.
                 let k = (path.to_owned(), operation);
                 let approved = map
@@ -291,6 +294,19 @@ impl AccessController {
                 }
             }
             CacheState::Uncoupled(map) => {
+                // Enforce a size cap to prevent unbounded growth.
+                if map.len() >= APPROVAL_CACHE_MAX_ENTRIES {
+                    // Evict all expired entries first.
+                    map.retain(|_, approved_at| approved_at.elapsed() < self.approval_ttl);
+                    // If still at capacity, skip caching.
+                    if map.len() >= APPROVAL_CACHE_MAX_ENTRIES {
+                        log::warn!(
+                            "Approval cache at capacity ({}), skipping uncoupled cache entry",
+                            APPROVAL_CACHE_MAX_ENTRIES,
+                        );
+                        return;
+                    }
+                }
                 for &op in ops {
                     map.insert((path.clone(), op), now);
                 }
