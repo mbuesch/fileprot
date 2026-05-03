@@ -829,7 +829,14 @@ impl Filesystem for ProtectedFilesystem {
             }
         }
 
-        for (i, (entry_ino, kind, name)) in full_entries.iter().enumerate().skip(offset as usize) {
+        let offset: usize = match offset.try_into() {
+            Ok(v) => v,
+            Err(_) => {
+                reply.error(Errno::EOVERFLOW);
+                return;
+            }
+        };
+        for (i, (entry_ino, kind, name)) in full_entries.iter().enumerate().skip(offset) {
             if reply.add(*entry_ino, (i + 1) as u64, *kind, name) {
                 break;
             }
