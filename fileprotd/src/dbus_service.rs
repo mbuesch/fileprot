@@ -3,8 +3,8 @@ use anyhow::{self as ah, Context, format_err as err};
 use fileprot_common::{DBUS_BUS_NAME, DBUS_OBJECT_PATH, dbus_interface::AccessControlRequest};
 use std::{
     collections::HashMap,
-    fs,
-    os::unix::fs::MetadataExt,
+    fs::OpenOptions,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::PathBuf,
     sync::{Arc, mpsc as std_mpsc},
 };
@@ -31,6 +31,8 @@ struct PendingEntry {
 pub struct AccessControlService {
     pending: Arc<Mutex<HashMap<String, PendingEntry>>>,
     gui_binary_path: PathBuf,
+    /// (dev, ino) of the GUI binary
+    gui_exe_identity: (u64, u64),
     peer_verification: PeerVerification,
 }
 
@@ -148,10 +150,15 @@ impl AccessControlService {
 }
 
 impl AccessControlService {
-    fn new(gui_binary_path: PathBuf, peer_verification: PeerVerification) -> Self {
+    fn new(
+        gui_binary_path: PathBuf,
+        gui_exe_identity: (u64, u64),
+        peer_verification: PeerVerification,
+    ) -> Self {
         AccessControlService {
             pending: Arc::new(Mutex::new(HashMap::new())),
             gui_binary_path,
+            gui_exe_identity,
             peer_verification,
         }
     }
@@ -175,7 +182,7 @@ impl AccessControlService {
 
     /// Verify that the D-Bus caller is the legitimate fileprot GUI binary
     /// by comparing (device, inode) of the caller's /proc/<pid>/exe against
-    /// the configured GUI binary path.
+    /// the identity cached at daemon startup.
     async fn verify_peer(
         &self,
         header: &zbus::message::Header<'_>,
@@ -195,26 +202,24 @@ impl AccessControlService {
             .await
             .context("failed to get peer PID")?;
 
-        // Verify the peer's executable against the configured GUI binary by
-        // comparing (device, inode).
+        // Open /proc/<pid>/exe with O_PATH so the kernel resolves the magic
+        // symlink to the actual executable inode directly.  fstat on the
+        // resulting fd gives (dev, ino) of that inode without any additional
+        // userspace symlink traversal on the resolved path string.
         let proc_exe = format!("/proc/{}/exe", pid);
-        let proc_meta =
-            fs::metadata(&proc_exe).with_context(|| format!("failed to stat {}", proc_exe))?;
-        let gui_meta = fs::metadata(&self.gui_binary_path).with_context(|| {
-            format!(
-                "failed to stat GUI binary '{}'",
-                self.gui_binary_path.display()
-            )
-        })?;
+        let (proc_dev, proc_ino) = stat_o_path(&proc_exe)
+            .with_context(|| format!("failed to stat {} via O_PATH", proc_exe))?;
 
-        if proc_meta.dev() != gui_meta.dev() || proc_meta.ino() != gui_meta.ino() {
+        // Compare against the identity captured once at startup.
+        let (expected_dev, expected_ino) = self.gui_exe_identity;
+        if proc_dev != expected_dev || proc_ino != expected_ino {
             return Err(err!(
                 "peer binary (dev={}, ino={}) does not match GUI binary '{}' (dev={}, ino={})",
-                proc_meta.dev(),
-                proc_meta.ino(),
+                proc_dev,
+                proc_ino,
                 self.gui_binary_path.display(),
-                gui_meta.dev(),
-                gui_meta.ino(),
+                expected_dev,
+                expected_ino,
             ));
         }
 
@@ -227,6 +232,25 @@ impl AccessControlService {
     }
 }
 
+/// Open `path` with `O_PATH | O_CLOEXEC` and return its `(dev, ino)` via `fstat`.
+///
+/// `O_PATH` has the kernel resolve the path (including magic symlinks such as
+/// `/proc/<pid>/exe`) to a file-descriptor that refers directly to the target
+/// inode.  `fstat` on that fd returns the inode's identity without a second
+/// round of userspace symlink resolution on the resolved path string, which
+/// `fs::metadata` would otherwise perform.
+fn stat_o_path(path: &str) -> ah::Result<(u64, u64)> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+        .open(path)
+        .with_context(|| format!("O_PATH open failed: {}", path))?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("fstat failed: {}", path))?;
+    Ok((meta.dev(), meta.ino()))
+}
+
 /// Start the D-Bus service and a background task that processes incoming access requests.
 /// Returns the D-Bus connection.
 pub async fn start_dbus_service(
@@ -234,7 +258,31 @@ pub async fn start_dbus_service(
     gui_binary_path: PathBuf,
     peer_verification: PeerVerification,
 ) -> ah::Result<Connection> {
-    let service = AccessControlService::new(gui_binary_path, peer_verification);
+    // Capture the GUI binary's (dev, ino) once at startup using O_PATH + fstat.
+    // This avoids re-following symlinks on every request and gives a stable
+    // identity for the lifetime of this daemon session.
+    let gui_exe_identity = if peer_verification.verify_exe {
+        let path_str = gui_binary_path
+            .to_str()
+            .ok_or_else(|| err!("GUI binary path is not valid UTF-8"))?;
+        let identity = stat_o_path(path_str).with_context(|| {
+            format!(
+                "failed to identify GUI binary '{}'",
+                gui_binary_path.display()
+            )
+        })?;
+        log::info!(
+            "GUI binary '{}' identity cached: dev={}, ino={}",
+            gui_binary_path.display(),
+            identity.0,
+            identity.1
+        );
+        identity
+    } else {
+        (0, 0)
+    };
+
+    let service = AccessControlService::new(gui_binary_path, gui_exe_identity, peer_verification);
     let pending = Arc::clone(&service.pending);
 
     let connection = connection::Builder::system()
