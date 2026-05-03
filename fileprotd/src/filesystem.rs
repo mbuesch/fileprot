@@ -1111,6 +1111,17 @@ impl Filesystem for ProtectedFilesystem {
                 let ino = match self.get_or_create_inode(&child_rel) {
                     Ok(i) => i,
                     Err(e) => {
+                        // The file was already created on disk. Remove the
+                        // orphan so the caller cannot see a file that has no
+                        // inode registered, and so the backing directory does
+                        // not accumulate invisible entries.
+                        if let Ok((p_fd, p_leaf)) = self.resolve_parent_fd(&child_rel) {
+                            let _ = unlinkat(
+                                p_fd.as_fd(),
+                                p_leaf.as_os_str(),
+                                UnlinkatFlags::NoRemoveDir,
+                            );
+                        }
                         reply.error(e);
                         return;
                     }
@@ -1241,6 +1252,14 @@ impl Filesystem for ProtectedFilesystem {
                 let ino = match self.get_or_create_inode(&child_rel) {
                     Ok(i) => i,
                     Err(e) => {
+                        // The directory was already created on disk. Remove
+                        // the orphan so the caller cannot see a directory
+                        // that has no inode registered.
+                        let _ = unlinkat(
+                            parent_fd.as_fd(),
+                            leaf.as_os_str(),
+                            UnlinkatFlags::RemoveDir,
+                        );
                         reply.error(e);
                         return;
                     }
