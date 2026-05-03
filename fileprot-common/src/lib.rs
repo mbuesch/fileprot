@@ -1,5 +1,5 @@
 use anyhow::{self as ah, Context, format_err as err};
-use std::{fmt, fs, str::FromStr};
+use std::{fmt, fs};
 
 pub mod config;
 pub mod dbus_interface;
@@ -44,23 +44,6 @@ impl fmt::Display for Operation {
             Operation::Rename => write!(f, "rename"),
             Operation::SetAttr => write!(f, "setattr"),
             Operation::Mkdir => write!(f, "mkdir"),
-        }
-    }
-}
-
-impl FromStr for Operation {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "read" => Ok(Operation::Read),
-            "write" => Ok(Operation::Write),
-            "create" => Ok(Operation::Create),
-            "delete" => Ok(Operation::Delete),
-            "rename" => Ok(Operation::Rename),
-            "setattr" => Ok(Operation::SetAttr),
-            "mkdir" => Ok(Operation::Mkdir),
-            _ => Err(format!("unknown operation: {}", s)),
         }
     }
 }
