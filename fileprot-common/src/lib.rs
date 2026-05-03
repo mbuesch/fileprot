@@ -1,3 +1,6 @@
+#[cfg(not(target_os = "linux"))]
+compile_error!("fileprot only supports Linux");
+
 use std::fmt;
 
 pub mod config;

@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+#[cfg(not(target_os = "linux"))]
+compile_error!("fileprot only supports Linux");
+
 use anyhow::{self as ah, Context as _};
 use clap::Parser;
 use dioxus::desktop::{

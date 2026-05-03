@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+#[cfg(not(target_os = "linux"))]
+compile_error!("fileprotd only supports Linux");
+
 use anyhow::{self as ah, Context as _, format_err as err};
 use clap::Parser;
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
