@@ -1,5 +1,4 @@
-use anyhow::{self as ah, Context, format_err as err};
-use std::{fmt, fs};
+use std::fmt;
 
 pub mod config;
 pub mod dbus_interface;
@@ -46,17 +45,4 @@ impl fmt::Display for Operation {
             Operation::Mkdir => write!(f, "mkdir"),
         }
     }
-}
-
-/// Resolve the application name from a process ID.
-pub fn resolve_app_name(pid: u32) -> ah::Result<String> {
-    let exe = fs::read_link(format!("/proc/{}/exe", pid))
-        .with_context(|| format!("failed to read /proc/{}/exe", pid))?;
-    let name = exe
-        .file_name()
-        .unwrap_or(exe.as_os_str())
-        .to_str()
-        .ok_or_else(|| err!("app name is not valid UTF-8"))?
-        .to_owned();
-    Ok(name)
 }

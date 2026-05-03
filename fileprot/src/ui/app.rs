@@ -126,7 +126,14 @@ fn use_dbus_handler(
                     if !pending.is_empty() {
                         log::info!("Loaded {} pending request(s)", pending.len());
                         raise_window(&win);
-                        requests.set(pending);
+                        // Push-merge by id: avoid overwriting entries already pushed
+                        // by signals that may have arrived before this fetch completed.
+                        let mut list = requests.write();
+                        for item in pending {
+                            if !list.iter().any(|r| r.id == item.id) {
+                                list.push(item);
+                            }
+                        }
                     }
                 }
                 Err(e) => {
