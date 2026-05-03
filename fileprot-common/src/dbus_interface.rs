@@ -8,7 +8,7 @@
 //!   RespondToRequest(request_id, approved) -> bool
 //!
 //! Signals:
-//!   NewRequest(id, pid, path, app_name, operation)
+//!   NewRequest(request_id)  -- ID only; GUI calls GetPendingRequests for the UID-filtered payload
 
 use serde::{Deserialize, Serialize};
 use zbus::{proxy, zvariant::Type};
@@ -30,8 +30,7 @@ pub struct AccessControlRequest {
     default_path = "/ch/bues/fileprot/Daemon"
 )]
 pub trait AccessControl {
-    /// Get all currently pending access requests.
-    /// Returns a list of (id, pid, path, app_name, operation) tuples.
+    /// Get all currently pending access requests filtered to the caller's UID.
     fn get_pending_requests(&self) -> zbus::Result<Vec<AccessControlRequest>>;
 
     /// Respond to an access request.
@@ -39,6 +38,8 @@ pub trait AccessControl {
     fn respond_to_request(&self, request_id: &str, approved: bool) -> zbus::Result<bool>;
 
     /// Signal emitted when a new access request arrives.
+    /// Carries only the request ID; the GUI must call GetPendingRequests to
+    /// retrieve the payload, which is filtered to the caller's own UID.
     #[zbus(signal)]
-    fn new_request(&self, request: AccessControlRequest) -> zbus::Result<()>;
+    fn new_request(&self, request_id: &str) -> zbus::Result<()>;
 }

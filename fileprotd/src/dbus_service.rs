@@ -141,11 +141,10 @@ impl AccessControlService {
     }
 
     /// Signal emitted when a new access request arrives.
+    /// Carries only the request ID; the GUI calls GetPendingRequests for the
+    /// UID-filtered payload, preventing cross-user information disclosure.
     #[zbus(signal)]
-    async fn new_request(
-        emitter: &SignalEmitter<'_>,
-        request: AccessControlRequest,
-    ) -> zbus::Result<()>;
+    async fn new_request(emitter: &SignalEmitter<'_>, request_id: &str) -> zbus::Result<()>;
 }
 
 impl AccessControlService {
@@ -283,7 +282,7 @@ pub async fn start_dbus_service(
             };
 
             if let Err(e) =
-                AccessControlService::new_request(iface_ref.signal_emitter(), info.clone()).await
+                AccessControlService::new_request(iface_ref.signal_emitter(), &info.id).await
             {
                 log::error!("Failed to emit NewRequest signal: {}", e);
             }

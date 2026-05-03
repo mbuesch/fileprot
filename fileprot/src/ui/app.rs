@@ -153,9 +153,23 @@ fn use_dbus_handler(
                         match item {
                             Some(signal) => match signal.args() {
                                 Ok(args) => {
-                                    error.set(None);
-                                    raise_window(&win);
-                                    requests.write().push(args.request);
+                                    log::debug!("NewRequest signal: id={}", args.request_id);
+                                    // Fetch the UID-filtered list from the daemon rather than
+                                    // trusting the broadcast signal payload, so User B's GUI
+                                    // never sees User A's requests (N1).
+                                    match proxy.get_pending_requests().await {
+                                        Ok(pending) => {
+                                            error.set(None);
+                                            if !pending.is_empty() {
+                                                raise_window(&win);
+                                            }
+                                            requests.set(pending);
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to get pending requests: {e}");
+                                            error.set(Some("Failed to load pending requests".to_string()));
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     log::error!("Failed to parse signal args: {e}");
