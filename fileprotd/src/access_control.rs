@@ -128,12 +128,12 @@ pub enum ApprovalCoupling {
 /// is enabled.
 #[derive(Debug, Clone)]
 enum CacheState {
-    /// Each approved process and operation is tracked individually.
-    /// Only that exact (process, operation) pair can reuse the cached approval.
-    Coupled(HashMap<(ProcessIdentity, Operation), Instant>),
-    /// Keyed by operation only: any process benefits from a recently-granted
-    /// approval for the same operation type.
-    Uncoupled(HashMap<Operation, Instant>),
+    /// Each approved (process, path, operation) triple is tracked individually.
+    /// Only that exact combination can reuse the cached approval.
+    Coupled(HashMap<(ProcessIdentity, String, Operation), Instant>),
+    /// Keyed by (path, operation) only: any process benefits from a recently-granted
+    /// approval for the same (path, operation) pair.
+    Uncoupled(HashMap<(String, Operation), Instant>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -202,6 +202,7 @@ impl AccessController {
     fn check_cache(
         &self,
         identity: Option<&ProcessIdentity>,
+        path: &str,
         operation: Operation,
     ) -> CachedApproval {
         if self.approval_ttl.is_zero() {
@@ -213,16 +214,17 @@ impl AccessController {
                 // Evict expired entries from the cache.
                 map.retain(|_, approved_at| approved_at.elapsed() < self.approval_ttl);
 
-                // Check if the given (identity, operation) pair has a valid cached approval.
-                let approved = identity.is_some_and(|id| {
-                    map.get(&(id.clone(), operation))
+                // Check if the given (identity, path, operation) triple has a valid cached approval.
+                let key = identity.map(|id| (id.clone(), path.to_owned(), operation));
+                let approved = key.as_ref().is_some_and(|k| {
+                    map.get(k)
                         .is_some_and(|approved_at| approved_at.elapsed() < self.approval_ttl)
                 });
                 if approved {
                     // Renew the TTL on each access if the option is set.
                     if self.renewal == ApprovalRenewal::RenewOnAccess
-                        && let Some(id) = identity
-                        && let Some(approved_at) = map.get_mut(&(id.clone(), operation))
+                        && let Some(k) = key
+                        && let Some(approved_at) = map.get_mut(&k)
                     {
                         *approved_at = Instant::now();
                     }
@@ -232,14 +234,15 @@ impl AccessController {
                 }
             }
             CacheState::Uncoupled(map) => {
-                // Check if the operation-scoped approval is still valid.
+                // Check if the (path, operation)-scoped approval is still valid.
+                let k = (path.to_owned(), operation);
                 let approved = map
-                    .get(&operation)
+                    .get(&k)
                     .is_some_and(|approved_at| approved_at.elapsed() < self.approval_ttl);
                 if approved {
                     // Renew the TTL on each access if the option is set.
                     if self.renewal == ApprovalRenewal::RenewOnAccess {
-                        map.insert(operation, Instant::now());
+                        map.insert(k, Instant::now());
                     }
                     CachedApproval::Approved
                 } else {
@@ -251,7 +254,12 @@ impl AccessController {
 
     /// Insert or refresh an approval entry.
     /// `identity` is only used in coupled mode.
-    fn cache_approval(&self, identity: Option<ProcessIdentity>, operation: Operation) {
+    fn cache_approval(
+        &self,
+        identity: Option<ProcessIdentity>,
+        path: String,
+        operation: Operation,
+    ) {
         let ops = implied_ops(operation);
         if self.approval_ttl.is_zero() || ops.is_empty() {
             return;
@@ -278,13 +286,13 @@ impl AccessController {
                         }
                     }
                     for &op in ops {
-                        map.insert((id.clone(), op), now);
+                        map.insert((id.clone(), path.clone(), op), now);
                     }
                 }
             }
             CacheState::Uncoupled(map) => {
                 for &op in ops {
-                    map.insert(op, now);
+                    map.insert((path.clone(), op), now);
                 }
             }
         }
@@ -302,7 +310,7 @@ impl AccessController {
         let pid = identity.pid;
 
         // Return early if a valid approval is cached.
-        if self.check_cache(Some(&identity), operation) == CachedApproval::Approved {
+        if self.check_cache(Some(&identity), &path, operation) == CachedApproval::Approved {
             log::debug!("Approval cache hit: pid={} op={}", pid, operation);
             return Ok(true);
         }
@@ -324,7 +332,7 @@ impl AccessController {
                 id: req_id.clone(),
                 pid: identity.pid,
                 uid: identity.uid,
-                path,
+                path: path.clone(),
                 app_name,
                 operation: operation.to_string(),
             },
@@ -367,7 +375,7 @@ impl AccessController {
             }
             Ok(approved) => {
                 if approved {
-                    self.cache_approval(Some(identity), operation);
+                    self.cache_approval(Some(identity), path, operation);
                 }
                 Ok(approved)
             }
