@@ -17,6 +17,7 @@ libc = { workspace = true }
 log = { workspace = true }
 nix = { workspace = true }
 tokio = { workspace = true }
+uuid = { workspace = true }
 zbus = { workspace = true }
 
 fileprot-common = { workspace = true }

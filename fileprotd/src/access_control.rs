@@ -4,14 +4,11 @@ use std::{
     collections::HashMap,
     fs,
     path::PathBuf,
-    sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
-        mpsc as std_mpsc,
-    },
+    sync::{Mutex, mpsc as std_mpsc},
     time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, oneshot};
+use uuid::Uuid;
 
 /// Maximum number of entries in the per-process approval cache.
 /// When the cache is full and all entries are still live, new approvals are
@@ -165,7 +162,6 @@ fn implied_ops(op: Operation) -> &'static [Operation] {
 pub struct AccessController {
     request_tx: mpsc::Sender<AccessRequest>,
     timeout: Duration,
-    next_id: AtomicU64,
     /// How long to remember an approval.
     /// A value of `Duration::ZERO` disables caching entirely.
     approval_ttl: Duration,
@@ -190,7 +186,6 @@ impl AccessController {
         AccessController {
             request_tx,
             timeout,
-            next_id: AtomicU64::new(1),
             approval_ttl,
             renewal,
             approval_cache: Mutex::new(cache),
@@ -331,7 +326,7 @@ impl AccessController {
             return Ok(true);
         }
 
-        let req_id = format!("req-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let req_id = Uuid::new_v4().to_string();
         // Use a std (non-async) sync_channel with a bound of 1.
         // Sender::send is non-blocking for a bound-1 channel that has not been
         // sent to yet, and it is safe to call from async code without touching
