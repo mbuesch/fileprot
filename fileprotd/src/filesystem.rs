@@ -40,6 +40,12 @@ const TTL: Duration = Duration::from_secs(1);
 const ROOT_INODE: INodeNo = INodeNo(1);
 const READ_MAX_SIZE: usize = 1024 * 1024;
 
+/// Only the nine standard rwx bits (owner/group/other) are permitted on
+/// backing-directory files. All other bits (setuid, setgid, sticky, …) are
+/// unconditionally stripped.
+const ALLOWED_MODE_BITS: Mode =
+    Mode::from_bits_truncate(Mode::S_IRWXU.bits() | Mode::S_IRWXG.bits() | Mode::S_IRWXO.bits());
+
 /// Convert a `nix::errno::Errno` to a `fuser::Errno`.
 fn errno_from_nix(e: nix::errno::Errno) -> Errno {
     Errno::from_i32(e as i32)
@@ -655,7 +661,8 @@ impl Filesystem for ProtectedFilesystem {
             } else {
                 leaf
             };
-            let nix_mode = Mode::from_bits_truncate(mode);
+            // Only allow standard rwx bits on backing files.
+            let nix_mode = Mode::from_bits_truncate(mode) & ALLOWED_MODE_BITS;
             if fchmodat(
                 parent_fd.as_fd(),
                 leaf_path.as_os_str(),
@@ -1094,7 +1101,8 @@ impl Filesystem for ProtectedFilesystem {
         if flags & libc::O_TRUNC != 0 {
             create_flags |= OFlag::O_TRUNC;
         }
-        let create_mode = Mode::from_bits_truncate(mode);
+        // Only allow standard rwx bits on backing files.
+        let create_mode = Mode::from_bits_truncate(mode) & ALLOWED_MODE_BITS;
 
         match self.open_backing_at(&child_rel, create_flags, create_mode) {
             Ok(owned_fd) => {
@@ -1219,7 +1227,8 @@ impl Filesystem for ProtectedFilesystem {
             Ok(true) => {}
         }
 
-        let nix_mode = Mode::from_bits_truncate(mode);
+        // Only allow standard rwx bits on backing files.
+        let nix_mode = Mode::from_bits_truncate(mode) & ALLOWED_MODE_BITS;
         let (parent_fd, leaf) = match self.resolve_parent_fd(&child_rel) {
             Ok(r) => r,
             Err(e) => {
