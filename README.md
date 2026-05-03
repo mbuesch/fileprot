@@ -5,6 +5,30 @@ Simple file protection utility for Linux.
 fileprot mounts one or more FUSE filesystems that intercept every file access.
 When an application tries to read, write, create, delete, rename, change attributes of, or make a directory in a protected mount, the operation is blocked until the user explicitly approves or rejects it through a desktop tray application.
 
+## Basic idea of operation
+
+Whenever the fileprot approval dialog pops up and the user didn't do an operation that requires approval, then this is a sign of a malicious program trying to access your files.
+In this case, the user must reject the request and investigate the requesting process further.
+
+The idea is to **mitigate** the effects of **malware** on your system by establishing another barrier for the most valuable files on your system.
+
+## Example: Protect SSH private keys
+
+To put your ssh keys under fileprot protection, mount a fileprot FUSE filesystem at `~/.ssh`, or mount it somewhere else and make symlinks from the private key files to the FUSE mount.
+
+Whenever you use ssh, the ssh client will try to read your private key file.
+This will trigger a fileprot request, and open the approval dialog showing the ssh client's PID, executable path, and the accessed file path.
+
+## What to put under fileprot protection?
+
+1) Do not overdo it.
+   Only put files under fileprot protection, that are really sensitive.
+   Otherwise the overwhelming number of requests will lead to prompt fatigue and the user will just approve everything without thinking.
+2) Restrict yourself to protecting things like: Private keys, password databases, sensitive documents like your bank account statements, or other private family data.
+3) You can create multiple fileprot mounts for different purposes and different access policies.
+
+## Architecture
+
 ![Architecture](assets/architecture.svg)
 
 ## Components
