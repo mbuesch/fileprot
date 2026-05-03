@@ -96,6 +96,10 @@ impl Config {
         self.renew_approval_on_access
     }
 
+    pub fn backing_base_dir(&self) -> &Path {
+        &self.backing_base_dir
+    }
+
     pub fn mounts(&self) -> &[MountConfig] {
         &self.mounts
     }

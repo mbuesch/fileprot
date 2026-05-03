@@ -60,6 +60,37 @@ async fn async_main(args: Args) -> ah::Result<()> {
         config.gui_binary_path().display()
     );
 
+    // Verify that the backing base directory is owned by root and not
+    // accessible to group or other. This is done once at startup so that
+    // misconfigured host permissions are caught before any FUSE mount is
+    // attempted.
+    {
+        let base = config.backing_base_dir();
+        let meta = std::fs::metadata(base).map_err(|e| {
+            err!(
+                "Failed to stat backing base directory '{}': {}",
+                base.display(),
+                e
+            )
+        })?;
+        use std::os::unix::fs::MetadataExt as _;
+        if meta.uid() != 0 {
+            return Err(err!(
+                "Backing base directory '{}' must be owned by root (uid 0), but uid is {}",
+                base.display(),
+                meta.uid()
+            ));
+        }
+        if meta.mode() & 0o077 != 0 {
+            return Err(err!(
+                "Backing base directory '{}' has unsafe permissions (mode {:04o}); \
+                 expected 0700 or stricter (no group/other bits)",
+                base.display(),
+                meta.mode() & 0o777
+            ));
+        }
+    }
+
     // Create the request channel (FUSE threads -> D-Bus service).
     let (request_tx, request_rx) = mpsc::channel(256);
 

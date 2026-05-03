@@ -1,4 +1,5 @@
 use crate::access_control::{AccessController, ProcessIdentity, QueueFullError};
+use anyhow::{self as ah, format_err as err};
 use fileprot_common::Operation;
 use fuser::{
     AccessFlags, BsdFileFlags, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
@@ -129,7 +130,7 @@ impl ProtectedFilesystem {
         mount_uid: u32,
         mount_gid: u32,
         access_control: Arc<AccessController>,
-    ) -> anyhow::Result<Self> {
+    ) -> ah::Result<Self> {
         let mut inodes = HashMap::new();
         let mut path_to_inode = HashMap::new();
 
@@ -152,7 +153,7 @@ impl ProtectedFilesystem {
             .custom_flags((OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC).bits())
             .open(&backing_dir)
             .map_err(|e| {
-                anyhow::anyhow!(
+                err!(
                     "Failed to open backing directory '{}': {}",
                     backing_dir.display(),
                     e
