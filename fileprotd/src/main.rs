@@ -5,10 +5,18 @@ use clap::Parser;
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
 use fuser::{Config as FuserConfig, MountOption, SessionACL, spawn_mount2};
 use nix::{
+    fcntl::{AtFlags, OFlag, open, openat},
     mount::{MntFlags, umount2},
-    sys::prctl,
+    sys::{
+        prctl,
+        stat::{FileStat, Mode, fstatat},
+    },
 };
-use std::{os::unix::fs::MetadataExt as _, path::Path, path::PathBuf, sync::Arc};
+use std::{
+    os::fd::{AsFd, OwnedFd},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::{
     signal::{
         ctrl_c,
@@ -20,6 +28,44 @@ use tokio::{
 mod access_control;
 mod dbus_service;
 mod filesystem;
+
+/// Open `path` with `O_PATH | O_CLOEXEC`.
+fn open_o_path(path: &Path) -> ah::Result<OwnedFd> {
+    open(path, OFlag::O_PATH | OFlag::O_CLOEXEC, Mode::empty())
+        .map_err(|e| err!("Failed to open '{}' with O_PATH: {}", path.display(), e))
+}
+
+/// Return `(st_dev, st_ino)` for the directory referenced by `fd`.
+fn fd_id(fd: impl AsFd) -> ah::Result<(u64, u64)> {
+    let st: FileStat =
+        fstatat(fd, ".", AtFlags::empty()).map_err(|e| err!("fstatat failed: {}", e))?;
+    Ok((st.st_dev as u64, st.st_ino as u64))
+}
+
+/// Return `true` if the directory referred to by `child_fd` is the same as,
+/// or is a descendant of, the directory identified by `ancestor_id`.
+fn is_fd_inside(child_fd: OwnedFd, ancestor_id: (u64, u64)) -> ah::Result<bool> {
+    let mut current = child_fd;
+    loop {
+        let cur_id = fd_id(current.as_fd())?;
+        if cur_id == ancestor_id {
+            return Ok(true);
+        }
+        let parent = openat(
+            current.as_fd(),
+            "..",
+            OFlag::O_PATH | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| err!("openat(\"..\") failed: {}", e))?;
+        let par_id = fd_id(parent.as_fd())?;
+        if par_id == cur_id {
+            // Reached VFS root: ".." resolves to the same inode as ".".
+            return Ok(false);
+        }
+        current = parent;
+    }
+}
 
 /// Detach a FUSE mountpoint from the kernel's VFS using a lazy unmount.
 /// On success the mountpoint is immediately invisible to new callers;
@@ -188,51 +234,30 @@ async fn async_main(args: Args) -> ah::Result<()> {
         // Guard against misconfiguration where the mountpoint overlaps with the
         // backing directory - this would recursively obscure files or cause
         // undefined FUSE behaviour.
+        //
+        // Open both paths with O_PATH so that subsequent fstat and openat(..)
+        // calls operate on the actual inodes rather than on string paths.
+        // This eliminates the TOCTOU window that exists between
+        // canonicalize() and spawn_mount2().
         {
-            let mp_meta = std::fs::metadata(mount_cfg.mountpoint()).map_err(|e| {
-                err!(
-                    "Failed to stat mount point '{}': {}",
-                    mount_cfg.mountpoint().display(),
-                    e
-                )
-            })?;
-            let bd_meta = std::fs::metadata(mount_cfg.backing_dir()).map_err(|e| {
-                err!(
-                    "Failed to stat backing dir '{}': {}",
-                    mount_cfg.backing_dir().display(),
-                    e
-                )
-            })?;
-            if mp_meta.dev() == bd_meta.dev() && mp_meta.ino() == bd_meta.ino() {
+            let mp_id = fd_id(open_o_path(mount_cfg.mountpoint())?)?;
+            let bd_id = fd_id(open_o_path(&mount_cfg.backing_dir())?)?;
+
+            if mp_id == bd_id {
                 return Err(err!(
                     "Mount point '{}' and backing directory '{}' are the same inode - refusing to mount",
                     mount_cfg.mountpoint().display(),
                     mount_cfg.backing_dir().display(),
                 ));
             }
-            // Use canonicalized paths to catch one being a subdirectory of the other.
-            let canonical_mp = std::fs::canonicalize(mount_cfg.mountpoint()).map_err(|e| {
-                err!(
-                    "Failed to canonicalize mount point '{}': {}",
-                    mount_cfg.mountpoint().display(),
-                    e
-                )
-            })?;
-            let canonical_bd = std::fs::canonicalize(mount_cfg.backing_dir()).map_err(|e| {
-                err!(
-                    "Failed to canonicalize backing dir '{}': {}",
-                    mount_cfg.backing_dir().display(),
-                    e
-                )
-            })?;
-            if canonical_mp.starts_with(&canonical_bd) {
+            if is_fd_inside(open_o_path(mount_cfg.mountpoint())?, bd_id)? {
                 return Err(err!(
                     "Mount point '{}' is inside backing directory '{}' - refusing to mount",
                     mount_cfg.mountpoint().display(),
                     mount_cfg.backing_dir().display(),
                 ));
             }
-            if canonical_bd.starts_with(&canonical_mp) {
+            if is_fd_inside(open_o_path(&mount_cfg.backing_dir())?, mp_id)? {
                 return Err(err!(
                     "Backing directory '{}' is inside mount point '{}' - refusing to mount",
                     mount_cfg.backing_dir().display(),
