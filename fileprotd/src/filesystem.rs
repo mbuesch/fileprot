@@ -38,6 +38,7 @@ use std::{
 
 const TTL: Duration = Duration::from_secs(1);
 const ROOT_INODE: INodeNo = INodeNo(1);
+const READ_MAX_SIZE: usize = 1024 * 1024;
 
 /// Convert a `nix::errno::Errno` to a `fuser::Errno`.
 fn errno_from_nix(e: nix::errno::Errno) -> Errno {
@@ -912,6 +913,13 @@ impl Filesystem for ProtectedFilesystem {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
+        let size: usize = size.try_into().unwrap_or(READ_MAX_SIZE);
+        let size = size.min(READ_MAX_SIZE);
+        if size == 0 {
+            reply.data(&[]);
+            return;
+        }
+
         let mut files = self.open_files.write().expect("Lock poisoned");
         let handle = match files.get_mut(&fh.0) {
             Some(h) => h,
@@ -926,7 +934,7 @@ impl Filesystem for ProtectedFilesystem {
             return;
         }
 
-        let mut buf = vec![0u8; size as usize];
+        let mut buf = vec![0u8; size];
         match handle.file.read(&mut buf) {
             Ok(n) => {
                 reply.data(&buf[..n]);
@@ -949,6 +957,11 @@ impl Filesystem for ProtectedFilesystem {
         _lock_owner: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
+        if data.is_empty() {
+            reply.written(0);
+            return;
+        }
+
         let mut files = self.open_files.write().expect("Lock poisoned");
         let handle = match files.get_mut(&fh.0) {
             Some(h) => h,
