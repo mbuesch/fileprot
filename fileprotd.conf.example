@@ -83,6 +83,13 @@ mountpoint = "/mnt/protected"
 #gid = "mygroup"
 #gid = "1000"
 
+# Per-mount overrides for approval settings.
+# When omitted, the global values above are used.
+#
+#approval_ttl_secs = 10
+#couple_approval_to_process = true
+#renew_approval_on_access = true
+
 
 # Another example mount section.
 #

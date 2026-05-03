@@ -156,24 +156,7 @@ async fn async_main(args: Args) -> ah::Result<()> {
     .await?;
     log::info!("D-Bus service started on system bus");
 
-    // Create the shared access controller.
-    let coupling = if config.couple_approval_to_process() {
-        access_control::ApprovalCoupling::CoupledToProcess
-    } else {
-        access_control::ApprovalCoupling::Uncoupled
-    };
-    let renewal = if config.renew_approval_on_access() {
-        access_control::ApprovalRenewal::RenewOnAccess
-    } else {
-        access_control::ApprovalRenewal::NoRenewal
-    };
-    let access_controller = Arc::new(access_control::AccessController::new(
-        request_tx,
-        config.request_timeout(),
-        config.approval_ttl(),
-        coupling,
-        renewal,
-    ));
+    // Per-mount access controllers are created inside the mount loop below.
 
     // Mount FUSE filesystems.
     let mut sessions = Vec::with_capacity(config.mounts().len());
@@ -276,6 +259,24 @@ async fn async_main(args: Args) -> ah::Result<()> {
             mount_cfg.backing_dir().display()
         );
 
+        let coupling = if mount_cfg.couple_approval_to_process(&config) {
+            access_control::ApprovalCoupling::CoupledToProcess
+        } else {
+            access_control::ApprovalCoupling::Uncoupled
+        };
+        let renewal = if mount_cfg.renew_approval_on_access(&config) {
+            access_control::ApprovalRenewal::RenewOnAccess
+        } else {
+            access_control::ApprovalRenewal::NoRenewal
+        };
+        let access_controller = Arc::new(access_control::AccessController::new(
+            request_tx.clone(),
+            config.request_timeout(),
+            mount_cfg.approval_ttl(&config),
+            coupling,
+            renewal,
+        ));
+
         let fs = filesystem::ProtectedFilesystem::new(
             mount_cfg.name().to_string(),
             mount_cfg.backing_dir().to_path_buf(),
@@ -299,6 +300,10 @@ async fn async_main(args: Args) -> ah::Result<()> {
             // attributes we return from getattr/lookup. This avoids having to
             // re-implement permission checking in the access() callback.
             MountOption::DefaultPermissions,
+            // Disallow setuid binaries and device nodes on the FUSE mount.
+            MountOption::NoSuid,
+            // Disallow device nodes on the FUSE mount.
+            MountOption::NoDev,
         ];
         fuser_config.acl = SessionACL::All;
 

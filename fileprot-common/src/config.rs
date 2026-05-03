@@ -96,6 +96,21 @@ impl Config {
         self.renew_approval_on_access
     }
 
+    /// Default approval TTL used when a mount does not specify its own.
+    pub fn default_approval_ttl_secs(&self) -> u64 {
+        self.approval_ttl_secs
+    }
+
+    /// Default couple_approval_to_process used when a mount does not specify its own.
+    pub fn default_couple_approval_to_process(&self) -> bool {
+        self.couple_approval_to_process
+    }
+
+    /// Default renew_approval_on_access used when a mount does not specify its own.
+    pub fn default_renew_approval_on_access(&self) -> bool {
+        self.renew_approval_on_access
+    }
+
     pub fn backing_base_dir(&self) -> &Path {
         &self.backing_base_dir
     }
@@ -131,6 +146,18 @@ pub struct MountConfig {
     /// Accepts a numeric gid or a group name string.
     /// Defaults to 0 (root) if not set.
     gid: Option<String>,
+
+    /// Per-mount override for approval_ttl_secs.
+    /// Falls back to the global `approval_ttl_secs` when not set.
+    approval_ttl_secs: Option<u64>,
+
+    /// Per-mount override for couple_approval_to_process.
+    /// Falls back to the global `couple_approval_to_process` when not set.
+    couple_approval_to_process: Option<bool>,
+
+    /// Per-mount override for renew_approval_on_access.
+    /// Falls back to the global `renew_approval_on_access` when not set.
+    renew_approval_on_access: Option<bool>,
 
     /// Resolved numeric uid (populated during load).
     #[serde(skip)]
@@ -168,6 +195,26 @@ impl MountConfig {
     /// Numeric gid that the FUSE filesystem root and files will be owned by.
     pub fn gid(&self) -> u32 {
         self.resolved_gid
+    }
+
+    /// Effective approval TTL for this mount, falling back to the global default.
+    pub fn approval_ttl(&self, global: &Config) -> Duration {
+        Duration::from_secs(
+            self.approval_ttl_secs
+                .unwrap_or_else(|| global.default_approval_ttl_secs()),
+        )
+    }
+
+    /// Effective couple_approval_to_process for this mount, falling back to the global default.
+    pub fn couple_approval_to_process(&self, global: &Config) -> bool {
+        self.couple_approval_to_process
+            .unwrap_or_else(|| global.default_couple_approval_to_process())
+    }
+
+    /// Effective renew_approval_on_access for this mount, falling back to the global default.
+    pub fn renew_approval_on_access(&self, global: &Config) -> bool {
+        self.renew_approval_on_access
+            .unwrap_or_else(|| global.default_renew_approval_on_access())
     }
 }
 
