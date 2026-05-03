@@ -9,7 +9,7 @@ use fuser::{
     ReplyLseek, ReplyOpen, ReplyPoll, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use nix::{
-    fcntl::{AtFlags, OFlag, RenameFlags as NixRenameFlags, openat, readlinkat, renameat2},
+    fcntl::{AtFlags, OFlag, RenameFlags as NixRenameFlags, openat, renameat2},
     sys::{
         stat::{
             FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags, fchmodat, fstatat, futimens,
@@ -385,7 +385,7 @@ impl ProtectedFilesystem {
             ctime: ts_to_systime(st.st_ctime, st.st_ctime_nsec),
             crtime: UNIX_EPOCH,
             kind,
-            perm: (st.st_mode & 0o7777) as u16,
+            perm: (st.st_mode & 0o0777) as u16,
             nlink: st.st_nlink as u32,
             uid: self.mount_uid,
             gid: self.mount_gid,
@@ -396,8 +396,12 @@ impl ProtectedFilesystem {
     }
 
     /// Stat `rel_path` (no symlink follow) and return FileAttr.
+    /// Returns `ENOENT` for symlinks: the backing dir must not contain symlinks.
     fn stat(&self, ino: INodeNo, rel_path: &Path) -> Result<FileAttr, Errno> {
         let st = self.stat_at(rel_path).map_err(errno_from_nix)?;
+        if SFlag::from_bits_truncate(st.st_mode).contains(SFlag::S_IFLNK) {
+            return Err(Errno::ENOENT);
+        }
         Ok(self.stat_to_attr(ino, &st))
     }
 
@@ -498,6 +502,12 @@ impl Filesystem for ProtectedFilesystem {
 
         match self.stat_at(&child_rel) {
             Ok(st) => {
+                // Reject symlinks in the backing dir: they bypass the approval
+                // flow if they point outside the FUSE mount.
+                if SFlag::from_bits_truncate(st.st_mode).contains(SFlag::S_IFLNK) {
+                    reply.error(Errno::ENOENT);
+                    return;
+                }
                 let ino = match self.get_or_create_inode(&child_rel) {
                     Ok(i) => i,
                     Err(e) => {
@@ -1485,24 +1495,11 @@ impl Filesystem for ProtectedFilesystem {
                 return;
             }
         };
-        let backing = self.backing_path_display(&rel_path);
-        let _ = backing;
-        let (parent_fd, leaf) = match self.resolve_parent_fd(&rel_path) {
-            Ok(r) => r,
-            Err(e) => {
-                reply.error(errno_from_nix(e));
-                return;
-            }
-        };
-        let leaf_path = if leaf.is_empty() {
-            OsString::from(".")
-        } else {
-            leaf
-        };
-        match readlinkat(parent_fd.as_fd(), leaf_path.as_os_str()) {
-            Ok(target) => reply.data(target.as_os_str().as_bytes()),
-            Err(e) => reply.error(errno_from_nix(e)),
-        }
+        // Symlinks in the backing dir are rejected: the
+        // kernel should never successfully look one up, so this path is a
+        // safety net.
+        let _ = rel_path;
+        reply.error(Errno::ENOENT);
     }
 
     fn mknod(
