@@ -16,7 +16,7 @@ use nix::{
         },
         time::TimeSpec,
     },
-    unistd::{Gid, Uid, UnlinkatFlags, dup, dup3, fchownat, unlinkat},
+    unistd::{UnlinkatFlags, dup, dup3, unlinkat},
 };
 use std::{
     collections::HashMap,
@@ -668,31 +668,18 @@ impl Filesystem for ProtectedFilesystem {
         }
 
         // Handle uid/gid change.
+        // Backing files are always owned by root on disk. The virtual filesystem
+        // presents mount_uid/mount_gid to callers. Only "changes" that target
+        // exactly mount_uid/mount_gid are accepted (they are no-ops on disk).
+        // Any attempt to change to a different uid/gid is rejected with EPERM.
         if uid.is_some() || gid.is_some() {
-            let (parent_fd, leaf) = match self.resolve_parent_fd(&rel_path) {
-                Ok(r) => r,
-                Err(e) => {
-                    reply.error(errno_from_nix(e));
-                    return;
-                }
-            };
-            let leaf_path = if leaf.is_empty() {
-                std::ffi::OsString::from(".")
-            } else {
-                leaf
-            };
-            let new_uid = uid.map(Uid::from_raw);
-            let new_gid = gid.map(Gid::from_raw);
-            if let Err(e) = fchownat(
-                parent_fd.as_fd(),
-                leaf_path.as_os_str(),
-                new_uid,
-                new_gid,
-                AtFlags::AT_SYMLINK_NOFOLLOW,
-            ) {
-                reply.error(errno_from_nix(e));
+            let requested_uid = uid.unwrap_or(self.mount_uid);
+            let requested_gid = gid.unwrap_or(self.mount_gid);
+            if requested_uid != self.mount_uid || requested_gid != self.mount_gid {
+                reply.error(Errno::EPERM);
                 return;
             }
+            // Requested uid/gid match mount_uid/mount_gid; no disk change needed.
         }
 
         // Handle atime/mtime change.
