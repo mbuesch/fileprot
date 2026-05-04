@@ -1,3 +1,6 @@
-/target/
+/.claude/
 /.vscode/
+/target/
+
+/.agents*
 /.mcp.json
