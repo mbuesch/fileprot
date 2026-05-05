@@ -246,24 +246,20 @@ pub fn App() -> Element {
                     src: ICON_RAW_2_DATA_URI.as_str(),
                     alt: "fileprot",
                 }
-                h1 { "fileprot" }
+                span { class: "header-title", "fileprot" }
                 if let Some(ref msg) = error {
                     span { class: "status", "{msg}" }
                 } else {
                     span { class: "status ok", "" }
                 }
             }
-            if request_list.is_empty() {
+            if let Some(req) = request_list.first() {
+                RequestListEntry { req: req.clone(), dbus_tx: dbus_coroutine }
+            } else {
                 div { class: "empty",
                     p { "No pending access requests." }
                     p { class: "hint",
                         "Requests will appear here when applications try to access protected files."
-                    }
-                }
-            } else {
-                div { class: "request-list",
-                    for req in request_list.iter() {
-                        RequestListEntry { req: req.clone(), dbus_tx: dbus_coroutine }
                     }
                 }
             }

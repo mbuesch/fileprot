@@ -50,7 +50,7 @@ async fn async_main(args: Args) -> ah::Result<()> {
             WindowBuilder::new()
                 .with_title("fileprot - Access Requests")
                 .with_always_on_top(false)
-                .with_inner_size(LogicalSize::new(700.0, 500.0))
+                .with_inner_size(LogicalSize::new(480.0, 210.0))
                 .with_window_icon(load_window_icon())
                 .with_visible(args.visible),
         )

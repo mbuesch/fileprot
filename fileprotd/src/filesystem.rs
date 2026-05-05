@@ -101,7 +101,10 @@ fn ts_to_systime(secs: i64, nsecs: i64) -> std::time::SystemTime {
         let (d_secs, d_nsecs) = if nsecs == 0 {
             ((secs.saturating_neg()) as u64, 0u32)
         } else {
-            ((secs.saturating_neg().saturating_sub(1)) as u64, 1_000_000_000 - nsecs)
+            (
+                (secs.saturating_neg().saturating_sub(1)) as u64,
+                1_000_000_000 - nsecs,
+            )
         };
         UNIX_EPOCH
             .checked_sub(Duration::new(d_secs, d_nsecs))

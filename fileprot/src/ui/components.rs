@@ -17,26 +17,32 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
         _ => "op-unknown",
     };
 
+    // Symbol prefix gives a non-color cue for colorblind users.
+    let op_label = match req.operation.as_str() {
+        "read" => "\u{2193} read",
+        "write" => "\u{2191} write",
+        "create" => "+ create",
+        "delete" => "\u{2715} delete",
+        _ => req.operation.as_str(),
+    };
+
     rsx! {
-        div { class: "request-card",
-            div { class: "request-info",
-                div { class: "request-field primary",
-                    span { class: "label", "File:" }
-                    span { class: "value path", "{req.path}" }
+        div { class: "request-card {op_class}",
+            div { class: "request-body",
+                // Primary: app name + operation badge
+                div { class: "app-row",
+                    span { class: "app-name", "{req.app_name}" }
+                    span { class: "op-badge {op_class}", "{op_label}" }
                 }
-                div { class: "request-field secondary",
-                    span { class: "label", "Application:" }
-                    span { class: "value", "{req.app_name}" }
-                }
-                div { class: "request-field tertiary",
-                    span { class: "label", "Operation:" }
-                    span { class: "value {op_class}", "{req.operation}" }
-                }
-                div { class: "request-field tertiary",
-                    span { class: "label", "PID:" }
-                    span { class: "value", "{req.pid}" }
+                // Secondary: file path
+                div { class: "file-path", "{req.path}" }
+                // Tertiary: PID
+                div { class: "meta-row",
+                    span { class: "meta-label", "PID" }
+                    span { "{req.pid}" }
                 }
             }
+            // Actions: Approve left, Deny right
             div { class: "request-actions",
                 button {
                     class: "btn btn-approve",
@@ -47,7 +53,7 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
                                 approved: true,
                             });
                     },
-                    "Approve"
+                    "\u{2713} Approve"
                 }
                 button {
                     class: "btn btn-deny",
@@ -58,7 +64,7 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
                                 approved: false,
                             });
                     },
-                    "Deny"
+                    "\u{2715} Deny"
                 }
             }
         }
