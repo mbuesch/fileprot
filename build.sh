@@ -34,5 +34,12 @@ fi
 
 # Release build
 if [ "$release" = "release" -o "$release" = "both" ]; then
-    cargo build --release $packages_args || die "Cargo build (release) failed."
+    if which cargo-auditable >/dev/null 2>&1; then
+        cargo auditable build --release $packages_args \
+            || die "Cargo build (release) failed."
+        #cargo audit --deny warnings bin $packages_release_paths \
+        #    || die "Cargo audit failed."
+    else
+        cargo build --release $packages_args || die "Cargo build (release) failed."
+    fi
 fi
