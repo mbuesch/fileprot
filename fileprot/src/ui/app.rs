@@ -3,7 +3,7 @@ use crate::{
     ui::{components::RequestListEntry, tray::SHOW_REQUESTED},
 };
 use base64::Engine;
-use dioxus::desktop::{tao, window};
+use dioxus::desktop::{tao, use_wry_event_handler, window};
 use dioxus::prelude::*;
 use fileprot_common::dbus_interface::AccessControlRequest;
 use std::sync::Arc;
@@ -233,6 +233,22 @@ pub fn App() -> Element {
     let tao_window = Arc::clone(&window().window);
     use_tray_watcher(Arc::clone(&tao_window));
     let dbus_coroutine = use_dbus_handler(tao_window, requests, error_sig);
+
+    // When the window is closed (hidden), deny all pending requests.
+    let _close_handler = use_wry_event_handler(move |event, _| {
+        if let tao::event::Event::WindowEvent {
+            event: tao::event::WindowEvent::CloseRequested,
+            ..
+        } = event
+        {
+            for req in requests.read().clone() {
+                dbus_coroutine.send(DbusAction::Respond {
+                    request_id: req.id.clone(),
+                    approved: false,
+                });
+            }
+        }
+    });
 
     let error = error_sig.read().clone();
     let request_list = requests.read().clone();
