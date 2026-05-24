@@ -353,7 +353,7 @@ impl ProtectedFilesystem {
     }
 
     /// Convert a [`nix::sys::stat::FileStat`] (from `fstatat`) to [`FileAttr`].
-    fn stat_to_attr(&self, ino: INodeNo, st: &FileStat) -> FileAttr {
+    fn stat_to_attr(&self, ino: INodeNo, st: &FileStat) -> Result<FileAttr, Errno> {
         let mode = SFlag::from_bits_truncate(st.st_mode);
         let kind = if mode.contains(SFlag::S_IFDIR) {
             FileType::Directory
@@ -363,23 +363,23 @@ impl ProtectedFilesystem {
             FileType::RegularFile
         };
 
-        FileAttr {
+        Ok(FileAttr {
             ino,
-            size: st.st_size as u64,
-            blocks: st.st_blocks as u64,
+            size: u64::try_from(st.st_size).map_err(|_| Errno::EOVERFLOW)?,
+            blocks: u64::try_from(st.st_blocks).map_err(|_| Errno::EOVERFLOW)?,
             atime: ts_to_systime(st.st_atime, st.st_atime_nsec),
             mtime: ts_to_systime(st.st_mtime, st.st_mtime_nsec),
             ctime: ts_to_systime(st.st_ctime, st.st_ctime_nsec),
             crtime: UNIX_EPOCH,
             kind,
             perm: (st.st_mode & 0o0777) as u16,
-            nlink: st.st_nlink as u32,
+            nlink: u32::try_from(st.st_nlink).map_err(|_| Errno::EOVERFLOW)?,
             uid: self.mount_uid,
             gid: self.mount_gid,
-            rdev: st.st_rdev as u32,
-            blksize: st.st_blksize as u32,
+            rdev: u32::try_from(st.st_rdev).map_err(|_| Errno::EOVERFLOW)?,
+            blksize: u32::try_from(st.st_blksize).map_err(|_| Errno::EOVERFLOW)?,
             flags: 0,
-        }
+        })
     }
 
     /// Stat `rel_path` (no symlink follow) and return FileAttr.
@@ -389,7 +389,7 @@ impl ProtectedFilesystem {
         if SFlag::from_bits_truncate(st.st_mode).contains(SFlag::S_IFLNK) {
             return Err(Errno::ENOENT);
         }
-        Ok(self.stat_to_attr(ino, &st))
+        self.stat_to_attr(ino, &st)
     }
 
     /// Allocate a new file handle.
@@ -502,7 +502,13 @@ impl Filesystem for ProtectedFilesystem {
                         return;
                     }
                 };
-                let attr = self.stat_to_attr(ino, &st);
+                let attr = match self.stat_to_attr(ino, &st) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        reply.error(e);
+                        return;
+                    }
+                };
                 reply.entry(&TTL, &attr, Generation(0));
             }
             Err(_) => {
@@ -842,7 +848,12 @@ impl Filesystem for ProtectedFilesystem {
             }
         };
         for (i, (entry_ino, kind, name)) in full_entries.iter().enumerate().skip(offset) {
-            if reply.add(*entry_ino, (i + 1) as u64, *kind, name) {
+            if reply.add(
+                *entry_ino,
+                u64::try_from(i + 1).expect("entry index fits in u64"),
+                *kind,
+                name,
+            ) {
                 break;
             }
         }
@@ -981,9 +992,10 @@ impl Filesystem for ProtectedFilesystem {
         }
 
         match handle.file.write(data) {
-            Ok(n) => {
-                reply.written(n as u32);
-            }
+            Ok(n) => match u32::try_from(n) {
+                Ok(written) => reply.written(written),
+                Err(_) => reply.error(Errno::EOVERFLOW),
+            },
             Err(e) => {
                 reply.error(Errno::from(e));
             }
