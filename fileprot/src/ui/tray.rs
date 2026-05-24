@@ -1,3 +1,4 @@
+use anyhow::{self as ah, Context as _};
 use image::GenericImageView;
 use ksni::{MenuItem, Tray, TrayMethods};
 use std::{
@@ -10,8 +11,8 @@ const ICON_PNG: &[u8] = include_bytes!("../../../assets/icon.png");
 /// Shared state: set by the tray activate handler, polled by the Dioxus coroutine.
 pub static SHOW_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-fn load_icon_pixmap() -> Vec<ksni::Icon> {
-    let img = image::load_from_memory(ICON_PNG).expect("failed to load icon PNG");
+fn load_icon_pixmap() -> ah::Result<Vec<ksni::Icon>> {
+    let img = image::load_from_memory(ICON_PNG).context("Failed to load icon from memory")?;
     let (width, height) = img.dimensions();
     let rgba = img.into_rgba8().into_raw();
     // Convert from RGBA8 to ARGB32 big-endian (StatusNotifierItem spec).
@@ -19,11 +20,11 @@ fn load_icon_pixmap() -> Vec<ksni::Icon> {
         .chunks(4)
         .flat_map(|p| [p[3], p[0], p[1], p[2]])
         .collect();
-    vec![ksni::Icon {
+    Ok(vec![ksni::Icon {
         width: width as i32,
         height: height as i32,
         data: argb,
-    }]
+    }])
 }
 
 struct FileprotTray;
@@ -34,7 +35,7 @@ impl Tray for FileprotTray {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        load_icon_pixmap()
+        load_icon_pixmap().unwrap_or_default()
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
