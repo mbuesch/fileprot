@@ -38,6 +38,64 @@ fn open_o_path(path: &Path) -> ah::Result<OwnedFd> {
         .map_err(|e| err!("Failed to open '{}' with O_PATH: {}", path.display(), e))
 }
 
+/// Walk every component of `path` with
+/// `O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, so that no intermediate
+/// symlink is ever followed.  Returns an `OwnedFd` for the final directory.
+///
+/// Only absolute paths whose components are all `Normal` (no `..`, no `.`,
+/// no embedded separators) are accepted; anything else is rejected to prevent
+/// accidental escape from the expected tree.
+fn open_dir_components(path: &Path) -> ah::Result<OwnedFd> {
+    use std::path::Component;
+    if !path.is_absolute() {
+        return Err(err!(
+            "Path '{}' is not absolute; refusing to walk components",
+            path.display()
+        ));
+    }
+    // Start from "/"; the VFS root is always trusted.
+    let mut current: OwnedFd = open(
+        Path::new("/"),
+        OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| err!("Failed to open '/': {}", e))?;
+
+    for component in path.components() {
+        match component {
+            Component::RootDir => {
+                // Already opened above; nothing to do for the root separator.
+            }
+            Component::Normal(name) => {
+                let next = openat(
+                    current.as_fd(),
+                    name,
+                    OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|e| {
+                    err!(
+                        "Failed to open directory component '{}' of '{}': {}",
+                        name.to_string_lossy(),
+                        path.display(),
+                        e
+                    )
+                })?;
+                current = next;
+            }
+            other => {
+                return Err(err!(
+                    "Unsupported path component '{:?}' in '{}'; \
+                     path must be absolute with no '..' components",
+                    other,
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
 /// Return `(st_dev, st_ino)` for the directory referenced by `fd`.
 fn fd_id(fd: impl AsFd) -> ah::Result<(u64, u64)> {
     let st: FileStat =
@@ -115,27 +173,33 @@ async fn async_main(args: Args) -> ah::Result<()> {
     // attempted.
     {
         let base = config.backing_base_dir();
-        let meta = std::fs::metadata(base).map_err(|e| {
+        let base_fd = open_dir_components(base).map_err(|e| {
+            err!(
+                "Failed to open backing base directory '{}': {}",
+                base.display(),
+                e
+            )
+        })?;
+        let st = fstatat(base_fd.as_fd(), ".", AtFlags::empty()).map_err(|e| {
             err!(
                 "Failed to stat backing base directory '{}': {}",
                 base.display(),
                 e
             )
         })?;
-        use std::os::unix::fs::MetadataExt as _;
-        if meta.uid() != 0 {
+        if st.st_uid != 0 {
             return Err(err!(
                 "Backing base directory '{}' must be owned by root (uid 0), but uid is {}",
                 base.display(),
-                meta.uid()
+                st.st_uid
             ));
         }
-        if meta.mode() & 0o077 != 0 {
+        if st.st_mode & 0o077 != 0 {
             return Err(err!(
                 "Backing base directory '{}' has unsafe permissions (mode {:04o}); \
                  expected 0700 or stricter (no group/other bits)",
                 base.display(),
-                meta.mode() & 0o777
+                st.st_mode & 0o777
             ));
         }
     }
@@ -276,17 +340,26 @@ async fn async_main(args: Args) -> ah::Result<()> {
             coupling,
             renewal,
         ));
+        let backing_fd = open_dir_components(&mount_cfg.backing_dir()).map_err(|e| {
+            err!(
+                "Failed to open backing directory '{}' for mount '{}': {}",
+                mount_cfg.backing_dir().display(),
+                mount_cfg.name(),
+                e
+            )
+        })?;
 
         let fs = filesystem::ProtectedFilesystem::new(
             mount_cfg.name().to_string(),
             mount_cfg.backing_dir().to_path_buf(),
+            backing_fd,
             mount_cfg.uid(),
             mount_cfg.gid(),
             Arc::clone(&access_controller),
         )
         .map_err(|e| {
             err!(
-                "Failed to open backing dir for '{}': {}",
+                "Failed to initialise filesystem for '{}': {}",
                 mount_cfg.name(),
                 e
             )

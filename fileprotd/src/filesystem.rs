@@ -1,5 +1,5 @@
 use crate::access_control::{AccessController, ProcessIdentity, QueueFullError};
-use anyhow::{self as ah, format_err as err};
+use anyhow as ah;
 use fileprot_common::Operation;
 use fuser::{
     AccessFlags, BsdFileFlags, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
@@ -22,11 +22,11 @@ use nix::{
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
-    fs::{File, OpenOptions},
+    fs::File,
     io::{Read, Seek, SeekFrom, Write},
     os::{
         fd::{AsFd, OwnedFd},
-        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+        unix::ffi::OsStrExt,
     },
     path::{Path, PathBuf},
     sync::{
@@ -157,6 +157,7 @@ impl ProtectedFilesystem {
     pub fn new(
         mount_name: String,
         backing_dir: PathBuf,
+        backing_dir_fd: OwnedFd,
         mount_uid: u32,
         mount_gid: u32,
         access_control: Arc<AccessController>,
@@ -173,23 +174,6 @@ impl ProtectedFilesystem {
             },
         );
         path_to_inode.insert("".into(), ROOT_INODE.0);
-
-        // Open the backing directory as a file descriptor rooted for all *at
-        // syscalls. O_NOFOLLOW ensures we do not follow a symlink in the final
-        // component of backing_dir itself. OpenOptions with custom_flags is
-        // safe and avoids any unsafe code.
-        let backing_file = OpenOptions::new()
-            .read(true)
-            .custom_flags((OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC).bits())
-            .open(&backing_dir)
-            .map_err(|e| {
-                err!(
-                    "Failed to open backing directory '{}': {}",
-                    backing_dir.display(),
-                    e
-                )
-            })?;
-        let backing_dir_fd: OwnedFd = backing_file.into();
 
         Ok(ProtectedFilesystem {
             mount_name,
