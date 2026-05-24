@@ -1541,6 +1541,7 @@ dependencies = [
  "libc",
  "log",
  "nix 0.31.3",
+ "rustix",
  "tokio",
  "uuid",
  "zbus",

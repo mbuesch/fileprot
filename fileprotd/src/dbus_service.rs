@@ -1,6 +1,7 @@
 use crate::access_control::AccessRequest;
 use anyhow::{self as ah, Context, format_err as err};
 use fileprot_common::{DBUS_BUS_NAME, DBUS_OBJECT_PATH, dbus_interface::AccessControlRequest};
+use rustix::process::{Pid as RustixPid, PidfdFlags, pidfd_open};
 use std::{
     collections::HashMap,
     fs::OpenOptions,
@@ -183,6 +184,13 @@ impl AccessControlService {
     /// Verify that the D-Bus caller is the legitimate fileprot GUI binary
     /// by comparing (device, inode) of the caller's /proc/<pid>/exe against
     /// the identity cached at daemon startup.
+    ///
+    /// A `pidfd` is opened before reading `/proc/<pid>/exe` so the kernel
+    /// holds a reference to the process for the duration of the check.  This
+    /// prevents a PID-reuse race where the original process exits and a
+    /// different process acquires the same PID before we open its exe path:
+    /// while a `pidfd` is open the kernel will not recycle the PID, even if
+    /// the process has already exited (it becomes a zombie instead).
     async fn verify_peer(
         &self,
         header: &zbus::message::Header<'_>,
@@ -202,6 +210,18 @@ impl AccessControlService {
             .await
             .context("failed to get peer PID")?;
 
+        // Open a pidfd for the peer process.  While this fd is held open the
+        // kernel will not free the PID - even if the process exits it becomes
+        // a zombie rather than having its PID reassigned.  This eliminates
+        // the PID-reuse race between obtaining the PID above and reading
+        // /proc/<pid>/exe below.
+        let pid_i32 = i32::try_from(pid)
+            .with_context(|| format!("PID {} out of range for pidfd_open", pid))?;
+        let rustix_pid =
+            RustixPid::from_raw(pid_i32).ok_or_else(|| err!("D-Bus returned PID 0 for peer"))?;
+        let pidfd = pidfd_open(rustix_pid, PidfdFlags::empty())
+            .with_context(|| format!("pidfd_open failed for PID {}", pid))?;
+
         // Open /proc/<pid>/exe with O_PATH so the kernel resolves the magic
         // symlink to the actual executable inode directly.  fstat on the
         // resulting fd gives (dev, ino) of that inode without any additional
@@ -209,6 +229,11 @@ impl AccessControlService {
         let proc_exe = format!("/proc/{}/exe", pid);
         let (proc_dev, proc_ino) = stat_o_path(&proc_exe)
             .with_context(|| format!("failed to stat {} via O_PATH", proc_exe))?;
+
+        // PID-stabilisation window is closed: the executable identity was
+        // read while the pidfd was held, so the PID could not have been
+        // recycled by a different process during that window.
+        drop(pidfd);
 
         // Compare against the identity captured once at startup.
         let (expected_dev, expected_ino) = self.gui_exe_identity;
