@@ -29,7 +29,7 @@ tokio-stream = "0.1"
 toml = "1.1"
 uuid = { version = "1", features = ["v4"] }
 x11rb = { version = "0.13", default-features = false }
-zbus = { version = "5.15", default-features = false, features = [ "tokio" ] }
+zbus = { version = "5.16", default-features = false, features = [ "tokio" ] }
 
 fileprot-common = { path = "./fileprot-common" }
 
