@@ -445,7 +445,7 @@ impl ProtectedFilesystem {
         match self.access_control.request_access(
             identity,
             display_path.clone(),
-            app_name,
+            &app_name,
             operation,
         ) {
             Ok(approved) => {

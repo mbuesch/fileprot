@@ -5,9 +5,9 @@ use fileprot_common::dbus_interface::AccessControlRequest;
 #[component]
 pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction>) -> Element {
     let req_id_approve = req.id.clone();
+    let req_id_approve_name = req.id.clone();
+    let req_id_approve_any = req.id.clone();
     let req_id_deny = req.id.clone();
-    let dbus_tx_approve = dbus_tx;
-    let dbus_tx_deny = dbus_tx;
 
     let op_class = match req.operation.as_str() {
         "read" => "op-read",
@@ -42,27 +42,47 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
                     span { "{req.pid}" }
                 }
             }
-            // Actions: Approve left, Deny right
+            // Actions: three approve buttons stacked left, deny full-height right
             div { class: "request-actions",
-                button {
-                    class: "btn btn-approve",
-                    onclick: move |_| {
-                        dbus_tx_approve
-                            .send(DbusAction::Respond {
+                div { class: "approve-column",
+                    button {
+                        class: "btn btn-approve",
+                        onclick: move |_| {
+                            dbus_tx.send(DbusAction::Respond {
                                 request_id: req_id_approve.clone(),
-                                approved: true,
+                                scope: "default",
                             });
-                    },
-                    "\u{2713} Approve"
+                        },
+                        "\u{2713} Approve this"
+                    }
+                    button {
+                        class: "btn btn-approve-prog",
+                        onclick: move |_| {
+                            dbus_tx.send(DbusAction::Respond {
+                                request_id: req_id_approve_name.clone(),
+                                scope: "name",
+                            });
+                        },
+                        "\u{2713} Approve program"
+                    }
+                    button {
+                        class: "btn btn-approve-any",
+                        onclick: move |_| {
+                            dbus_tx.send(DbusAction::Respond {
+                                request_id: req_id_approve_any.clone(),
+                                scope: "any",
+                            });
+                        },
+                        "\u{2713} Approve any"
+                    }
                 }
                 button {
                     class: "btn btn-deny",
                     onclick: move |_| {
-                        dbus_tx_deny
-                            .send(DbusAction::Respond {
-                                request_id: req_id_deny.clone(),
-                                approved: false,
-                            });
+                        dbus_tx.send(DbusAction::Respond {
+                            request_id: req_id_deny.clone(),
+                            scope: "deny",
+                        });
                     },
                     "\u{2715} Deny"
                 }

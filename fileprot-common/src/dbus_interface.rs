@@ -27,8 +27,13 @@ pub trait AccessControl {
     fn get_pending_requests(&self) -> zbus::Result<Vec<AccessControlRequest>>;
 
     /// Respond to an access request.
+    /// `scope` controls the approval decision and caching:
+    ///   - `"deny"`    - deny the request, no caching
+    ///   - `"default"` - approve using the daemon's configured coupling mode
+    ///   - `"name"`    - approve and cache by process name
+    ///   - `"any"`     - approve and cache uncoupled (any future process)
     /// Returns true if the request was found and the response was recorded.
-    fn respond_to_request(&self, request_id: &str, approved: bool) -> zbus::Result<bool>;
+    fn respond_to_request(&self, request_id: &str, scope: &str) -> zbus::Result<bool>;
 
     /// Signal emitted when a new access request arrives.
     /// Carries only the request ID; the GUI must call GetPendingRequests to

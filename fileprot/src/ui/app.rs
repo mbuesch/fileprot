@@ -22,7 +22,10 @@ static ICON_RAW_2_DATA_URI: LazyLock<String> = LazyLock::new(|| {
 /// Message type for the D-Bus coroutine communication.
 #[derive(Debug)]
 pub(crate) enum DbusAction {
-    Respond { request_id: String, approved: bool },
+    Respond {
+        request_id: String,
+        scope: &'static str,
+    },
 }
 
 /// Query the global cursor position from the X11 server.
@@ -193,8 +196,8 @@ fn use_dbus_handler(
                     }
                     action = rx.next() => {
                         match action {
-                            Some(DbusAction::Respond { request_id, approved }) => {
-                                match proxy.respond_to_request(&request_id, approved).await {
+                            Some(DbusAction::Respond { request_id, scope }) => {
+                                match proxy.respond_to_request(&request_id, scope).await {
                                     Ok(found) => {
                                         if !found {
                                             log::warn!(
@@ -244,7 +247,7 @@ pub fn App() -> Element {
             for req in requests.read().clone() {
                 dbus_coroutine.send(DbusAction::Respond {
                     request_id: req.id.clone(),
-                    approved: false,
+                    scope: "deny",
                 });
             }
         }

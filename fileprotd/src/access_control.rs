@@ -1,7 +1,7 @@
 use anyhow::{self as ah};
 use fileprot_common::{Operation, dbus_interface::AccessControlRequest};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     fs,
     path::PathBuf,
     sync::{Mutex, mpsc as std_mpsc},
@@ -27,14 +27,42 @@ impl std::fmt::Display for QueueFullError {
 
 impl std::error::Error for QueueFullError {}
 
+/// How the user decided on an access request, including which caching scope to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    /// Deny the request; do not cache anything.
+    Deny,
+    /// Approve using the AccessController's configured coupling mode
+    /// (determined by `ApprovalCoupling` at construction time).
+    ApproveDefault,
+    /// Approve and cache keyed on process exe, path, and operation.
+    /// Future requests from any process sharing the same executable will
+    /// be auto-approved within the TTL window.
+    ApproveExe,
+    /// Approve and cache uncoupled; any future process hitting the same
+    /// (path, operation) within the TTL will be auto-approved.
+    ApproveAny,
+}
+
+impl ApprovalDecision {
+    pub fn is_approved(&self) -> bool {
+        match self {
+            ApprovalDecision::Deny => false,
+            ApprovalDecision::ApproveDefault
+            | ApprovalDecision::ApproveExe
+            | ApprovalDecision::ApproveAny => true,
+        }
+    }
+}
+
 /// A request from the FUSE filesystem to the D-Bus service,
 /// asking the user for approval.
 pub struct AccessRequest {
     pub request: AccessControlRequest,
-    /// Sender half of the response channel. The D-Bus handler calls
-    /// `send(approved)` on this; it is a std (non-async) Sender so it is safe
+    /// Sender half of the response channel. The D-Bus handler sends an
+    /// `ApprovalDecision` here; it is a std (non-async) Sender so it is safe
     /// to call from async code without blocking the executor.
-    pub response_tx: std_mpsc::SyncSender<bool>,
+    pub response_tx: std_mpsc::SyncSender<ApprovalDecision>,
     /// Receiver half of a cancellation pair. The FUSE thread holds the sender
     /// side alive for the entire duration of `request_access`. When the
     /// function returns (timeout, response received, or error), the sender is
@@ -121,24 +149,6 @@ pub enum ApprovalCoupling {
     Uncoupled,
 }
 
-/// Storage for the approval cache, keyed on whether process-identity coupling
-/// is enabled.
-#[derive(Debug, Clone)]
-enum CacheState {
-    /// Each approved (process, path, operation) triple is tracked individually.
-    /// Only that exact combination can reuse the cached approval.
-    Coupled(HashMap<(ProcessIdentity, String, Operation), Instant>),
-    /// Keyed by (path, operation) only: any process benefits from a recently-granted
-    /// approval for the same (path, operation) pair.
-    Uncoupled(HashMap<(String, Operation), Instant>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum CachedApproval {
-    Approved,
-    NotApproved,
-}
-
 /// Returns the set of operations to store in the cache when `op` is approved.
 fn implied_ops(op: Operation) -> &'static [Operation] {
     match op {
@@ -156,6 +166,26 @@ fn implied_ops(op: Operation) -> &'static [Operation] {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PidCacheKey {
+    pub identity: ProcessIdentity,
+    pub accessed_path: String,
+    pub operation: Operation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ExeCacheKey {
+    pub exe_path: PathBuf,
+    pub accessed_path: String,
+    pub operation: Operation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AnyCacheKey {
+    pub accessed_path: String,
+    pub operation: Operation,
+}
+
 /// Handle held by the FUSE filesystem to send access requests.
 /// Bridges synchronous FUSE threads to the async D-Bus service.
 #[derive(Debug)]
@@ -167,8 +197,14 @@ pub struct AccessController {
     approval_ttl: Duration,
     /// Whether cache hits reset the TTL timer.
     renewal: ApprovalRenewal,
-    /// Approval cache, mode determined at construction time.
-    approval_cache: Mutex<CacheState>,
+    /// Coupling mode used when the GUI sends `ApproveDefault`.
+    default_coupling: ApprovalCoupling,
+    /// Cache keyed by (ProcessIdentity, path, operation).
+    pid_cache: Mutex<HashMap<PidCacheKey, Instant>>,
+    /// Cache keyed by (exe_path, path, operation).
+    exe_cache: Mutex<HashMap<ExeCacheKey, Instant>>,
+    /// Cache keyed by (path, operation).
+    any_cache: Mutex<HashMap<AnyCacheKey, Instant>>,
 }
 
 impl AccessController {
@@ -179,133 +215,188 @@ impl AccessController {
         coupling: ApprovalCoupling,
         renewal: ApprovalRenewal,
     ) -> Self {
-        let cache = match coupling {
-            ApprovalCoupling::CoupledToProcess => CacheState::Coupled(HashMap::new()),
-            ApprovalCoupling::Uncoupled => CacheState::Uncoupled(HashMap::new()),
-        };
         AccessController {
             request_tx,
             timeout,
             approval_ttl,
             renewal,
-            approval_cache: Mutex::new(cache),
+            default_coupling: coupling,
+            pid_cache: Mutex::new(HashMap::new()),
+            exe_cache: Mutex::new(HashMap::new()),
+            any_cache: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Return `true` if a non-expired approval is cached.
-    /// `identity` is only consulted in coupled mode.
+    /// Return `true` if a non-expired approval is cached in any scope.
     fn check_cache(
         &self,
-        identity: Option<&ProcessIdentity>,
-        path: &str,
+        identity: &ProcessIdentity,
+        accessed_path: &str,
         operation: Operation,
-    ) -> CachedApproval {
-        if self.approval_ttl.is_zero() {
-            return CachedApproval::NotApproved;
+    ) -> bool {
+        let ttl = self.approval_ttl;
+        if ttl.is_zero() {
+            return false;
         }
-        let mut cache = self.approval_cache.lock().expect("Lock poisoned");
-        match &mut *cache {
-            CacheState::Coupled(map) => {
-                // Evict expired entries from the cache.
-                map.retain(|_, approved_at| approved_at.elapsed() < self.approval_ttl);
+        let now = Instant::now();
+        let mut approved = false;
 
-                // Check if the given (identity, path, operation) triple has a valid cached approval.
-                let key = identity.map(|id| (id.clone(), path.to_owned(), operation));
-                let approved = key.as_ref().is_some_and(|k| {
-                    map.get(k)
-                        .is_some_and(|approved_at| approved_at.elapsed() < self.approval_ttl)
-                });
-                if approved {
-                    // Renew the TTL on each access if the option is set.
-                    if self.renewal == ApprovalRenewal::RenewOnAccess
-                        && let Some(k) = key
-                        && let Some(approved_at) = map.get_mut(&k)
-                    {
-                        *approved_at = Instant::now();
-                    }
-                    CachedApproval::Approved
-                } else {
-                    CachedApproval::NotApproved
+        // Check PID-coupled cache.
+        {
+            let mut cache = self.pid_cache.lock().expect("Lock poisoned");
+            cache.retain(|_, approved_at| approved_at.elapsed() < ttl);
+            let key = PidCacheKey {
+                identity: identity.clone(),
+                accessed_path: accessed_path.to_owned(),
+                operation,
+            };
+            if let Entry::Occupied(mut e) = cache.entry(key) {
+                if self.renewal == ApprovalRenewal::RenewOnAccess {
+                    e.insert(now);
                 }
-            }
-            CacheState::Uncoupled(map) => {
-                // Evict expired entries from the cache.
-                map.retain(|_, approved_at| approved_at.elapsed() < self.approval_ttl);
-
-                // Check if the (path, operation)-scoped approval is still valid.
-                let k = (path.to_owned(), operation);
-                let approved = map
-                    .get(&k)
-                    .is_some_and(|approved_at| approved_at.elapsed() < self.approval_ttl);
-                if approved {
-                    // Renew the TTL on each access if the option is set.
-                    if self.renewal == ApprovalRenewal::RenewOnAccess {
-                        map.insert(k, Instant::now());
-                    }
-                    CachedApproval::Approved
-                } else {
-                    CachedApproval::NotApproved
-                }
+                approved = true;
             }
         }
+
+        // Check exe-coupled cache.
+        {
+            let mut cache = self.exe_cache.lock().expect("Lock poisoned");
+            cache.retain(|_, approved_at| approved_at.elapsed() < ttl);
+            let key = ExeCacheKey {
+                exe_path: identity.exe_path.clone(),
+                accessed_path: accessed_path.to_owned(),
+                operation,
+            };
+            if let Entry::Occupied(mut e) = cache.entry(key) {
+                if self.renewal == ApprovalRenewal::RenewOnAccess {
+                    e.insert(now);
+                }
+                approved = true;
+            }
+        }
+
+        // Check uncoupled cache.
+        {
+            let mut cache = self.any_cache.lock().expect("Lock poisoned");
+            cache.retain(|_, approved_at| approved_at.elapsed() < ttl);
+            let key = AnyCacheKey {
+                accessed_path: accessed_path.to_owned(),
+                operation,
+            };
+            if let Entry::Occupied(mut e) = cache.entry(key) {
+                if self.renewal == ApprovalRenewal::RenewOnAccess {
+                    e.insert(now);
+                }
+                approved = true;
+            }
+        }
+
+        approved
     }
 
-    /// Insert or refresh an approval entry.
-    /// `identity` is only used in coupled mode.
+    /// Insert or refresh an approval entry based on the given decision.
     fn cache_approval(
         &self,
-        identity: Option<ProcessIdentity>,
-        path: String,
+        decision: ApprovalDecision,
+        identity: &ProcessIdentity,
+        accessed_path: &str,
         operation: Operation,
     ) {
         let ops = implied_ops(operation);
-        if self.approval_ttl.is_zero() || ops.is_empty() {
+        let ttl = self.approval_ttl;
+        if ttl.is_zero() || ops.is_empty() {
             return;
         }
+
+        // Resolve ApproveDefault to the configured coupling mode.
+        let decision = match decision {
+            ApprovalDecision::Deny => {
+                // Deny is not cached.
+                return;
+            }
+            ApprovalDecision::ApproveDefault => match self.default_coupling {
+                ApprovalCoupling::CoupledToProcess => ApprovalDecision::ApproveDefault,
+                ApprovalCoupling::Uncoupled => ApprovalDecision::ApproveAny,
+            },
+            ApprovalDecision::ApproveExe => ApprovalDecision::ApproveExe,
+            ApprovalDecision::ApproveAny => ApprovalDecision::ApproveAny,
+        };
+
         let now = Instant::now();
-        let mut cache = self.approval_cache.lock().expect("Lock poisoned");
-        match &mut *cache {
-            CacheState::Coupled(map) => {
-                if let Some(id) = identity {
-                    // Enforce a size cap to prevent unbounded growth from many
-                    // short-lived processes that each get approved once.
-                    if map.len() >= APPROVAL_CACHE_MAX_ENTRIES {
-                        // Evict all expired entries first.
-                        map.retain(|_, approved_at| approved_at.elapsed() < self.approval_ttl);
-                        // If still at capacity, skip caching; the process will
-                        // simply be prompted again on its next access.
-                        if map.len() >= APPROVAL_CACHE_MAX_ENTRIES {
-                            log::warn!(
-                                "Approval cache at capacity ({}), not caching approval for pid={}",
-                                APPROVAL_CACHE_MAX_ENTRIES,
-                                id.pid,
-                            );
-                            return;
-                        }
-                    }
-                    for &op in ops {
-                        map.insert((id.clone(), path.clone(), op), now);
+
+        match decision {
+            ApprovalDecision::ApproveDefault => {
+                // CoupledToProcess: store in pid_cache.
+                let mut cache = self.pid_cache.lock().expect("Lock poisoned");
+                if cache.len() >= APPROVAL_CACHE_MAX_ENTRIES {
+                    cache.retain(|_, approved_at| approved_at.elapsed() < ttl);
+                    if cache.len() >= APPROVAL_CACHE_MAX_ENTRIES {
+                        log::warn!(
+                            "PID approval cache at capacity ({}), not caching for pid={}",
+                            APPROVAL_CACHE_MAX_ENTRIES,
+                            identity.pid,
+                        );
+                        return;
                     }
                 }
+                for &op in ops {
+                    cache.insert(
+                        PidCacheKey {
+                            identity: identity.clone(),
+                            accessed_path: accessed_path.to_owned(),
+                            operation: op,
+                        },
+                        now,
+                    );
+                }
             }
-            CacheState::Uncoupled(map) => {
-                // Enforce a size cap to prevent unbounded growth.
-                if map.len() >= APPROVAL_CACHE_MAX_ENTRIES {
-                    // Evict all expired entries first.
-                    map.retain(|_, approved_at| approved_at.elapsed() < self.approval_ttl);
-                    // If still at capacity, skip caching.
-                    if map.len() >= APPROVAL_CACHE_MAX_ENTRIES {
+            ApprovalDecision::ApproveExe => {
+                let mut cache = self.exe_cache.lock().expect("Lock poisoned");
+                if cache.len() >= APPROVAL_CACHE_MAX_ENTRIES {
+                    cache.retain(|_, approved_at| approved_at.elapsed() < ttl);
+                    if cache.len() >= APPROVAL_CACHE_MAX_ENTRIES {
                         log::warn!(
-                            "Approval cache at capacity ({}), skipping uncoupled cache entry",
+                            "Executable approval cache at capacity ({}), not caching for exe={}",
+                            APPROVAL_CACHE_MAX_ENTRIES,
+                            identity.exe_path.display(),
+                        );
+                        return;
+                    }
+                }
+                for &op in ops {
+                    cache.insert(
+                        ExeCacheKey {
+                            exe_path: identity.exe_path.clone(),
+                            accessed_path: accessed_path.to_owned(),
+                            operation: op,
+                        },
+                        now,
+                    );
+                }
+            }
+            ApprovalDecision::ApproveAny => {
+                let mut cache = self.any_cache.lock().expect("Lock poisoned");
+                if cache.len() >= APPROVAL_CACHE_MAX_ENTRIES {
+                    cache.retain(|_, approved_at| approved_at.elapsed() < ttl);
+                    if cache.len() >= APPROVAL_CACHE_MAX_ENTRIES {
+                        log::warn!(
+                            "Uncoupled approval cache at capacity ({}), skipping entry",
                             APPROVAL_CACHE_MAX_ENTRIES,
                         );
                         return;
                     }
                 }
                 for &op in ops {
-                    map.insert((path.clone(), op), now);
+                    cache.insert(
+                        AnyCacheKey {
+                            accessed_path: accessed_path.to_owned(),
+                            operation: op,
+                        },
+                        now,
+                    );
                 }
             }
+            ApprovalDecision::Deny => unreachable!("Deny handled above"),
         }
     }
 
@@ -315,13 +406,13 @@ impl AccessController {
         &self,
         identity: ProcessIdentity,
         path: String,
-        app_name: String,
+        app_name: &str,
         operation: Operation,
     ) -> ah::Result<bool> {
         let pid = identity.pid;
 
         // Return early if a valid approval is cached.
-        if self.check_cache(Some(&identity), &path, operation) == CachedApproval::Approved {
+        if self.check_cache(&identity, &path, operation) {
             log::debug!("Approval cache hit: pid={} op={}", pid, operation);
             return Ok(true);
         }
@@ -344,7 +435,7 @@ impl AccessController {
                 pid: identity.pid,
                 uid: identity.uid,
                 path: path.clone(),
-                app_name,
+                app_name: app_name.to_string(),
                 operation: operation.to_string(),
             },
             response_tx,
@@ -384,11 +475,11 @@ impl AccessController {
                 log::error!("Access request {} channel closed", req_id);
                 Ok(false)
             }
-            Ok(approved) => {
-                if approved {
-                    self.cache_approval(Some(identity), path, operation);
+            Ok(decision) => {
+                if decision.is_approved() {
+                    self.cache_approval(decision, &identity, &path, operation);
                 }
-                Ok(approved)
+                Ok(decision.is_approved())
             }
         }
     }

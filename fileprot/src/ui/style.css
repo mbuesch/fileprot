@@ -137,7 +137,15 @@ body {
 
 .request-actions {
     display: flex;
+    flex-direction: row;
+    align-items: stretch;
     border-top: 1px solid #e0e0e0;
+}
+
+.approve-column {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
 }
 
 .btn {
@@ -154,17 +162,45 @@ body {
 
 .btn-approve {
     background: #3841c2;
-    border-radius: 0 0 0 8px;
-    border-right: 1px solid rgba(255,255,255,0.15);
+    border-radius: 0;
 }
-
-.btn-approve:hover  { filter: brightness(1.15); }
-.btn-approve:active { filter: brightness(0.9);  }
 
 .btn-deny {
     background: #ca3b3b;
+    border-left: 1px solid rgba(255,255,255,0.15);
     border-radius: 0 0 8px 0;
+    flex: 0 0 28%;
 }
 
-.btn-deny:hover  { filter: brightness(1.15); }
-.btn-deny:active { filter: brightness(0.9);  }
+.btn-approve-prog,
+.btn-approve-any {
+    flex: 1;
+    padding: 8px 0;
+    border: none;
+    font-size: 9px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.12s;
+    letter-spacing: 0.02em;
+    color: #ffffff;
+    background: #525bc8;
+    border-top: 1px solid rgba(255,255,255,0.15);
+}
+
+.btn-approve-any {
+    border-radius: 0 0 0 8px;
+}
+
+.btn-approve:hover,
+.btn-approve-prog:hover,
+.btn-approve-any:hover,
+.btn-deny:hover {
+    filter: brightness(1.15);
+}
+
+.btn-approve:active,
+.btn-approve-prog:active,
+.btn-approve-any:active,
+.btn-deny:active {
+    filter: brightness(0.9);
+}

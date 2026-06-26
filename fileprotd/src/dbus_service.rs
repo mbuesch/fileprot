@@ -1,4 +1,4 @@
-use crate::access_control::AccessRequest;
+use crate::access_control::{AccessRequest, ApprovalDecision};
 use anyhow::{self as ah, Context, format_err as err};
 use fileprot_common::{DBUS_BUS_NAME, DBUS_OBJECT_PATH, dbus_interface::AccessControlRequest};
 use rustix::process::{Pid as RustixPid, PidfdFlags, pidfd_open};
@@ -25,7 +25,7 @@ pub struct PeerVerification {
 /// A pending request waiting for user response.
 struct PendingEntry {
     request: AccessControlRequest,
-    response_tx: Option<std_mpsc::SyncSender<bool>>,
+    response_tx: Option<std_mpsc::SyncSender<ApprovalDecision>>,
 }
 
 /// D-Bus service exposed by the daemon for the GUI to interact with.
@@ -75,13 +75,29 @@ impl AccessControlService {
     /// The caller's binary is verified against the configured GUI path, and
     /// the caller's D-Bus UID must match the UID of the requesting process;
     /// this prevents User B from approving or denying User A's requests.
+    ///
+    /// `scope` controls the decision and caching:
+    ///   - `"deny"`    - deny the request
+    ///   - `"default"` - approve using the daemon's configured coupling mode
+    ///   - `"name"`    - approve and cache by process name
+    ///   - `"any"`     - approve and cache uncoupled (any future process)
     async fn respond_to_request(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &Connection,
         request_id: &str,
-        approved: bool,
+        scope: &str,
     ) -> zbus::fdo::Result<bool> {
+        let decision = match scope {
+            "deny" => ApprovalDecision::Deny,
+            "default" => ApprovalDecision::ApproveDefault,
+            "name" => ApprovalDecision::ApproveExe,
+            "any" => ApprovalDecision::ApproveAny,
+            other => {
+                log::warn!("Unknown approval scope '{}', treating as deny", other);
+                ApprovalDecision::Deny
+            }
+        };
         // Verify binary identity first.
         if self.peer_verification.verify_exe
             && let Err(e) = self.verify_peer(&header, connection).await
@@ -124,12 +140,17 @@ impl AccessControlService {
 
         if let Some(mut req) = pending.remove(request_id) {
             log::info!(
-                "Request {} {} by user",
+                "Request {} {} by user (scope={})",
                 request_id,
-                if approved { "approved" } else { "denied" }
+                if decision != ApprovalDecision::Deny {
+                    "approved"
+                } else {
+                    "denied"
+                },
+                scope,
             );
             if let Some(tx) = req.response_tx.take()
-                && tx.send(approved).is_err()
+                && tx.send(decision).is_err()
             {
                 log::warn!(
                     "Request {}: response channel closed before send (FUSE thread already gone)",
