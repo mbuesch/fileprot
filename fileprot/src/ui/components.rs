@@ -53,7 +53,7 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
                                 scope: "default",
                             });
                         },
-                        "\u{2713} Approve this"
+                        "\u{2713} Approve once"
                     }
                     button {
                         class: "btn btn-approve-prog",
@@ -63,7 +63,7 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
                                 scope: "name",
                             });
                         },
-                        "\u{2713} Approve program"
+                        "\u{2713} Approve this program + any path"
                     }
                     button {
                         class: "btn btn-approve-any",

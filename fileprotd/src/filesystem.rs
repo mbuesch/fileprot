@@ -444,7 +444,8 @@ impl ProtectedFilesystem {
 
         match self.access_control.request_access(
             identity,
-            display_path.clone(),
+            &self.mount_name,
+            rel_path,
             &app_name,
             operation,
         ) {

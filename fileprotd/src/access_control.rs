@@ -3,7 +3,7 @@ use fileprot_common::{Operation, dbus_interface::AccessControlRequest};
 use std::{
     collections::{HashMap, hash_map::Entry},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, mpsc as std_mpsc},
     time::{Duration, Instant},
 };
@@ -168,22 +168,23 @@ fn implied_ops(op: Operation) -> &'static [Operation] {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PidCacheKey {
-    pub identity: ProcessIdentity,
-    pub accessed_path: String,
     pub operation: Operation,
+    pub identity: ProcessIdentity,
+    pub mount: String,
+    pub accessed_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ExeCacheKey {
-    pub exe_path: PathBuf,
-    pub accessed_path: String,
     pub operation: Operation,
+    pub exe_path: PathBuf,
+    pub mount: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct AnyCacheKey {
-    pub accessed_path: String,
     pub operation: Operation,
+    pub mount: String,
 }
 
 /// Handle held by the FUSE filesystem to send access requests.
@@ -231,7 +232,8 @@ impl AccessController {
     fn check_cache(
         &self,
         identity: &ProcessIdentity,
-        accessed_path: &str,
+        mount: &str,
+        accessed_path: &Path,
         operation: Operation,
     ) -> bool {
         let ttl = self.approval_ttl;
@@ -246,9 +248,10 @@ impl AccessController {
             let mut cache = self.pid_cache.lock().expect("Lock poisoned");
             cache.retain(|_, approved_at| approved_at.elapsed() < ttl);
             let key = PidCacheKey {
-                identity: identity.clone(),
-                accessed_path: accessed_path.to_owned(),
                 operation,
+                mount: mount.to_string(),
+                identity: identity.clone(),
+                accessed_path: accessed_path.to_path_buf(),
             };
             if let Entry::Occupied(mut e) = cache.entry(key) {
                 if self.renewal == ApprovalRenewal::RenewOnAccess {
@@ -263,9 +266,9 @@ impl AccessController {
             let mut cache = self.exe_cache.lock().expect("Lock poisoned");
             cache.retain(|_, approved_at| approved_at.elapsed() < ttl);
             let key = ExeCacheKey {
-                exe_path: identity.exe_path.clone(),
-                accessed_path: accessed_path.to_owned(),
                 operation,
+                exe_path: identity.exe_path.clone(),
+                mount: mount.to_string(),
             };
             if let Entry::Occupied(mut e) = cache.entry(key) {
                 if self.renewal == ApprovalRenewal::RenewOnAccess {
@@ -280,8 +283,8 @@ impl AccessController {
             let mut cache = self.any_cache.lock().expect("Lock poisoned");
             cache.retain(|_, approved_at| approved_at.elapsed() < ttl);
             let key = AnyCacheKey {
-                accessed_path: accessed_path.to_owned(),
                 operation,
+                mount: mount.to_string(),
             };
             if let Entry::Occupied(mut e) = cache.entry(key) {
                 if self.renewal == ApprovalRenewal::RenewOnAccess {
@@ -299,7 +302,8 @@ impl AccessController {
         &self,
         decision: ApprovalDecision,
         identity: &ProcessIdentity,
-        accessed_path: &str,
+        mount: &str,
+        accessed_path: &Path,
         operation: Operation,
     ) {
         let ops = implied_ops(operation);
@@ -342,9 +346,10 @@ impl AccessController {
                 for &op in ops {
                     cache.insert(
                         PidCacheKey {
-                            identity: identity.clone(),
-                            accessed_path: accessed_path.to_owned(),
                             operation: op,
+                            identity: identity.clone(),
+                            mount: mount.to_string(),
+                            accessed_path: accessed_path.to_path_buf(),
                         },
                         now,
                     );
@@ -366,9 +371,9 @@ impl AccessController {
                 for &op in ops {
                     cache.insert(
                         ExeCacheKey {
-                            exe_path: identity.exe_path.clone(),
-                            accessed_path: accessed_path.to_owned(),
                             operation: op,
+                            exe_path: identity.exe_path.clone(),
+                            mount: mount.to_string(),
                         },
                         now,
                     );
@@ -389,8 +394,8 @@ impl AccessController {
                 for &op in ops {
                     cache.insert(
                         AnyCacheKey {
-                            accessed_path: accessed_path.to_owned(),
                             operation: op,
+                            mount: mount.to_string(),
                         },
                         now,
                     );
@@ -405,14 +410,15 @@ impl AccessController {
     pub fn request_access(
         &self,
         identity: ProcessIdentity,
-        path: String,
+        mount: &str,
+        accessed_path: &Path,
         app_name: &str,
         operation: Operation,
     ) -> ah::Result<bool> {
         let pid = identity.pid;
 
         // Return early if a valid approval is cached.
-        if self.check_cache(&identity, &path, operation) {
+        if self.check_cache(&identity, mount, accessed_path, operation) {
             log::debug!("Approval cache hit: pid={} op={}", pid, operation);
             return Ok(true);
         }
@@ -434,7 +440,7 @@ impl AccessController {
                 id: req_id.clone(),
                 pid: identity.pid,
                 uid: identity.uid,
-                path: path.clone(),
+                path: format!("[{}]/{}", mount, accessed_path.display()),
                 app_name: app_name.to_string(),
                 operation: operation.to_string(),
             },
@@ -477,7 +483,7 @@ impl AccessController {
             }
             Ok(decision) => {
                 if decision.is_approved() {
-                    self.cache_approval(decision, &identity, &path, operation);
+                    self.cache_approval(decision, &identity, mount, accessed_path, operation);
                 }
                 Ok(decision.is_approved())
             }
