@@ -67,8 +67,8 @@ journalctl -u fileprotd -f
 The tray GUI (`fileprot`) can be started as a systemd user service, which automatically launches it on graphical session startup (e.g., XFCE, GNOME):
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now fileprot.service
+# Run as user (NOT root)
+./restart-user.sh
 ```
 
 Check status:
@@ -84,3 +84,4 @@ journalctl --user -u fileprot.service -f
 ```
 
 The systemd user service is installed automatically during `sudo ./install.sh`.
+The `restart-user.sh` script enables and starts the service.
