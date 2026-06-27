@@ -5,6 +5,7 @@ use std::fmt;
 
 pub mod config;
 pub mod dbus_interface;
+pub mod fileops;
 
 /// Well-known D-Bus bus name for the daemon.
 pub const DBUS_BUS_NAME: &str = "ch.bues.fileprot.Daemon";

@@ -1,7 +1,8 @@
-use crate::{DEFAULT_BACKING_BASE_DIR, DEFAULT_GUI_BINARY_PATH};
+use crate::{DEFAULT_BACKING_BASE_DIR, DEFAULT_GUI_BINARY_PATH, fileops::open_dir_components};
 use anyhow::{self as ah, Context, format_err as err};
 use nix::{
-    fcntl::{OFlag, open},
+    fcntl::{AtFlags, OFlag, open},
+    sys::stat::fstatat,
     sys::stat::{Mode, fstat},
     unistd::{Group, User, geteuid},
 };
@@ -331,12 +332,51 @@ impl Config {
     }
 
     fn validate(&self) -> ah::Result<()> {
-        if !self.backing_base_dir.is_absolute() {
-            return Err(err!(
-                "invalid config: backing_base_dir '{}' must be an absolute path",
-                self.backing_base_dir.display()
-            ));
+        {
+            let base = self.backing_base_dir();
+            // Verify that the backing base directory is an absolute path.
+            if !base.is_absolute() {
+                return Err(err!(
+                    "invalid config: backing_base_dir '{}' must be an absolute path",
+                    base.display()
+                ));
+            }
+            // Verify that the backing base directory is owned by root and not
+            // accessible to group or other.
+            let base_fd = open_dir_components(base).map_err(|e| {
+                err!(
+                    "Failed to open backing base directory '{}': {}",
+                    base.display(),
+                    e
+                )
+            })?;
+            let st = fstatat(base_fd.as_fd(), ".", AtFlags::empty()).map_err(|e| {
+                err!(
+                    "Failed to stat backing base directory '{}': {}",
+                    base.display(),
+                    e
+                )
+            })?;
+            let mode = st.st_mode & 0o777;
+            let uid = st.st_uid;
+            let daemon_euid = geteuid().as_raw();
+            if uid != daemon_euid {
+                return Err(err!(
+                    "Backing base directory '{}' must be owned by the fileprotd's effective user id, \
+                    (directory uid {uid} != daemon euid {daemon_euid}).",
+                    base.display(),
+                ));
+            }
+            if mode & 0o077 != 0 {
+                return Err(err!(
+                    "Backing base directory '{}' has unsafe permissions (mode {mode:03o}); \
+                    expected 0700 or stricter (no group/other bits)",
+                    base.display()
+                ));
+            }
         }
+
+        // Validate each mount configuration.
         if self.mounts.is_empty() {
             return Err(err!(
                 "invalid config: at least one [[mount]] must be configured"
@@ -371,6 +411,7 @@ impl Config {
                 "backing_dir must be absolute"
             );
         }
+
         Ok(())
     }
 }

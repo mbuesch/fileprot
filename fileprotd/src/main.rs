@@ -5,18 +5,14 @@ compile_error!("fileprotd only supports Linux");
 
 use anyhow::{self as ah, Context as _, format_err as err};
 use clap::Parser;
+use fileprot_common::fileops::{fd_id, is_fd_inside, open_dir_components, open_o_path};
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
 use fuser::{Config as FuserConfig, MountOption, SessionACL, spawn_mount2};
 use nix::{
-    fcntl::{AtFlags, OFlag, open, openat},
     mount::{MntFlags, umount2},
-    sys::{
-        prctl,
-        stat::{FileStat, Mode, fstatat},
-    },
+    sys::prctl,
 };
 use std::{
-    os::fd::{AsFd, OwnedFd},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -31,102 +27,6 @@ use tokio::{
 mod access_control;
 mod dbus_service;
 mod filesystem;
-
-/// Open `path` with `O_PATH | O_CLOEXEC`.
-fn open_o_path(path: &Path) -> ah::Result<OwnedFd> {
-    open(path, OFlag::O_PATH | OFlag::O_CLOEXEC, Mode::empty())
-        .map_err(|e| err!("Failed to open '{}' with O_PATH: {}", path.display(), e))
-}
-
-/// Walk every component of `path` with
-/// `O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, so that no intermediate
-/// symlink is ever followed.  Returns an `OwnedFd` for the final directory.
-///
-/// Only absolute paths whose components are all `Normal` (no `..`, no `.`,
-/// no embedded separators) are accepted; anything else is rejected to prevent
-/// accidental escape from the expected tree.
-fn open_dir_components(path: &Path) -> ah::Result<OwnedFd> {
-    use std::path::Component;
-    if !path.is_absolute() {
-        return Err(err!(
-            "Path '{}' is not absolute; refusing to walk components",
-            path.display()
-        ));
-    }
-    // Start from "/"; the VFS root is always trusted.
-    let mut current: OwnedFd = open(
-        Path::new("/"),
-        OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|e| err!("Failed to open '/': {}", e))?;
-
-    for component in path.components() {
-        match component {
-            Component::RootDir => {
-                // Already opened above; nothing to do for the root separator.
-            }
-            Component::Normal(name) => {
-                let next = openat(
-                    current.as_fd(),
-                    name,
-                    OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-                    Mode::empty(),
-                )
-                .map_err(|e| {
-                    err!(
-                        "Failed to open directory component '{}' of '{}': {}",
-                        name.to_string_lossy(),
-                        path.display(),
-                        e
-                    )
-                })?;
-                current = next;
-            }
-            other => {
-                return Err(err!(
-                    "Unsupported path component '{:?}' in '{}'; \
-                     path must be absolute with no '..' components",
-                    other,
-                    path.display()
-                ));
-            }
-        }
-    }
-    Ok(current)
-}
-
-/// Return `(st_dev, st_ino)` for the directory referenced by `fd`.
-fn fd_id(fd: impl AsFd) -> ah::Result<(u64, u64)> {
-    let st: FileStat =
-        fstatat(fd, ".", AtFlags::empty()).map_err(|e| err!("fstatat failed: {}", e))?;
-    Ok((st.st_dev as u64, st.st_ino as u64))
-}
-
-/// Return `true` if the directory referred to by `child_fd` is the same as,
-/// or is a descendant of, the directory identified by `ancestor_id`.
-fn is_fd_inside(child_fd: OwnedFd, ancestor_id: (u64, u64)) -> ah::Result<bool> {
-    let mut current = child_fd;
-    loop {
-        let cur_id = fd_id(current.as_fd())?;
-        if cur_id == ancestor_id {
-            return Ok(true);
-        }
-        let parent = openat(
-            current.as_fd(),
-            "..",
-            OFlag::O_PATH | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|e| err!("openat(\"..\") failed: {}", e))?;
-        let par_id = fd_id(parent.as_fd())?;
-        if par_id == cur_id {
-            // Reached VFS root: ".." resolves to the same inode as ".".
-            return Ok(false);
-        }
-        current = parent;
-    }
-}
 
 /// Detach a FUSE mountpoint from the kernel's VFS using a lazy unmount.
 /// On success the mountpoint is immediately invisible to new callers;
@@ -166,43 +66,6 @@ async fn async_main(args: Args) -> ah::Result<()> {
         config.mounts().len(),
         config.gui_binary_path().display()
     );
-
-    // Verify that the backing base directory is owned by root and not
-    // accessible to group or other. This is done once at startup so that
-    // misconfigured host permissions are caught before any FUSE mount is
-    // attempted.
-    {
-        let base = config.backing_base_dir();
-        let base_fd = open_dir_components(base).map_err(|e| {
-            err!(
-                "Failed to open backing base directory '{}': {}",
-                base.display(),
-                e
-            )
-        })?;
-        let st = fstatat(base_fd.as_fd(), ".", AtFlags::empty()).map_err(|e| {
-            err!(
-                "Failed to stat backing base directory '{}': {}",
-                base.display(),
-                e
-            )
-        })?;
-        if st.st_uid != 0 {
-            return Err(err!(
-                "Backing base directory '{}' must be owned by root (uid 0), but uid is {}",
-                base.display(),
-                st.st_uid
-            ));
-        }
-        if st.st_mode & 0o077 != 0 {
-            return Err(err!(
-                "Backing base directory '{}' has unsafe permissions (mode {:04o}); \
-                 expected 0700 or stricter (no group/other bits)",
-                base.display(),
-                st.st_mode & 0o777
-            ));
-        }
-    }
 
     // Create the request channel (FUSE threads -> D-Bus service).
     let (request_tx, request_rx) = mpsc::channel(256);
