@@ -9,10 +9,12 @@ use fileprot_common::fileops::{fd_id, is_fd_inside, open_dir_components, open_o_
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
 use fuser::{Config as FuserConfig, MountOption, SessionACL, spawn_mount2};
 use nix::{
+    errno::Errno::ENOTCONN,
     mount::{MntFlags, umount2},
     sys::prctl,
 };
 use std::{
+    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -93,18 +95,33 @@ async fn async_main(args: Args) -> ah::Result<()> {
             continue;
         }
 
-        // Validate that the backing directory exists and is accessible.
-        if !mount_cfg.backing_dir().exists() {
-            return Err(err!(
-                "Backing directory does not exist: {}",
-                mount_cfg.backing_dir().display()
-            ));
-        }
-        if !mount_cfg.backing_dir().is_dir() {
-            return Err(err!(
-                "Backing path is not a directory: {}",
-                mount_cfg.backing_dir().display()
-            ));
+        // Ensure the backing directory exists and is accessible.
+        let backing_dir = mount_cfg.backing_dir();
+        match backing_dir.try_exists() {
+            Ok(true) => {
+                if !backing_dir.is_dir() {
+                    return Err(err!(
+                        "Backing path is not a directory: {}",
+                        backing_dir.display()
+                    ));
+                }
+            }
+            Ok(false) => {
+                log::info!("Creating backing directory {}", backing_dir.display());
+                fs::create_dir_all(&backing_dir).with_context(|| {
+                    format!(
+                        "Failed to create backing directory {}",
+                        backing_dir.display()
+                    )
+                })?;
+            }
+            Err(e) => {
+                return Err(err!(
+                    "Backing directory is not accessible: {} ({})",
+                    backing_dir.display(),
+                    e
+                ));
+            }
         }
 
         // Validate that the mount point exists.
@@ -122,7 +139,7 @@ async fn async_main(args: Args) -> ah::Result<()> {
                 // kernel still has the mountpoint in the VFS table but the
                 // FUSE endpoint is gone, so every stat() returns ENOTCONN.
                 // Try to detach it so we can mount cleanly.
-                if e.raw_os_error() == Some(nix::errno::Errno::ENOTCONN as i32) {
+                if e.raw_os_error() == Some(ENOTCONN as i32) {
                     log::warn!(
                         "Stale FUSE mount detected at '{}' (ENOTCONN), attempting cleanup.",
                         mount_cfg.mountpoint().display()
