@@ -4,12 +4,14 @@ use fileprot_common::{DBUS_BUS_NAME, DBUS_OBJECT_PATH, dbus_interface::AccessCon
 use rustix::process::{Pid as RustixPid, PidfdFlags, pidfd_open};
 use std::{
     collections::HashMap,
-    fs::OpenOptions,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::unix::fs::MetadataExt,
     path::PathBuf,
     sync::{Arc, mpsc as std_mpsc},
 };
-use tokio::sync::{Mutex, mpsc};
+use tokio::{
+    fs::OpenOptions,
+    sync::{Mutex, mpsc},
+};
 use zbus::{Connection, connection, interface, object_server::SignalEmitter};
 
 /// D-Bus peer-verification options (for testing only).
@@ -249,6 +251,7 @@ impl AccessControlService {
         // userspace symlink traversal on the resolved path string.
         let proc_exe = format!("/proc/{}/exe", pid);
         let (proc_dev, proc_ino) = stat_o_path(&proc_exe)
+            .await
             .with_context(|| format!("failed to stat {} via O_PATH", proc_exe))?;
 
         // PID-stabilisation window is closed: the executable identity was
@@ -285,14 +288,16 @@ impl AccessControlService {
 /// inode.  `fstat` on that fd returns the inode's identity without a second
 /// round of userspace symlink resolution on the resolved path string, which
 /// `fs::metadata` would otherwise perform.
-fn stat_o_path(path: &str) -> ah::Result<(u64, u64)> {
+async fn stat_o_path(path: &str) -> ah::Result<(u64, u64)> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
         .open(path)
+        .await
         .with_context(|| format!("O_PATH open failed: {}", path))?;
     let meta = file
         .metadata()
+        .await
         .with_context(|| format!("fstat failed: {}", path))?;
     Ok((meta.dev(), meta.ino()))
 }
@@ -311,7 +316,7 @@ pub async fn start_dbus_service(
         let path_str = gui_binary_path
             .to_str()
             .ok_or_else(|| err!("GUI binary path is not valid UTF-8"))?;
-        let identity = stat_o_path(path_str).with_context(|| {
+        let identity = stat_o_path(path_str).await.with_context(|| {
             format!(
                 "failed to identify GUI binary '{}'",
                 gui_binary_path.display()

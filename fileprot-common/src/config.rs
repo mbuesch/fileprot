@@ -8,8 +8,6 @@ use nix::{
 };
 use serde::Deserialize;
 use std::{
-    fs::File,
-    io::Read,
     os::fd::AsFd,
     path::{Path, PathBuf},
     time::Duration,
@@ -251,7 +249,7 @@ fn default_backing_base_dir() -> PathBuf {
 
 impl Config {
     /// Load configuration from the given path.
-    pub fn load(path: &Path) -> ah::Result<Self> {
+    pub async fn load(path: &Path) -> ah::Result<Self> {
         let file_fd = open(path, OFlag::O_RDONLY | OFlag::O_CLOEXEC, Mode::empty())
             .with_context(|| format!("Failed to open config '{}'", path.display()))?;
         let st = fstat(file_fd.as_fd())
@@ -292,10 +290,10 @@ impl Config {
                 path.display(),
             ));
         }
-        let mut file = File::from(file_fd);
-        let mut content = String::new();
-        file.read_to_string(&mut content)
+        let content = tokio::fs::read(path)
+            .await
             .with_context(|| format!("Failed to read config '{}'", path.display()))?;
+        let content = String::from_utf8(content).context("Config file is not valid UTF-8")?;
         let mut config: Config = toml::from_str(&content).context("Failed to parse config")?;
         config.resolve_backing_dirs();
         config.resolve_uid_gid()?;

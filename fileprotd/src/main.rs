@@ -14,7 +14,7 @@ use nix::{
     sys::prctl,
 };
 use std::{
-    fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -62,7 +62,7 @@ async fn async_main(args: Args) -> ah::Result<()> {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
 
     log::info!("Loading configuration from {}", config_path.display());
-    let config = Config::load(&config_path)?;
+    let config = Config::load(&config_path).await?;
     log::info!(
         "Configuration loaded: {} mount(s), gui_binary={}",
         config.mounts().len(),
@@ -97,49 +97,56 @@ async fn async_main(args: Args) -> ah::Result<()> {
 
         // Ensure the backing directory exists and is accessible.
         let backing_dir = mount_cfg.backing_dir();
-        match backing_dir.try_exists() {
-            Ok(true) => {
-                if !backing_dir.is_dir() {
+        match tokio::fs::metadata(&backing_dir).await {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
                     return Err(err!(
                         "Backing path is not a directory: {}",
                         backing_dir.display()
                     ));
                 }
             }
-            Ok(false) => {
+            Err(err) if err.kind() == ErrorKind::NotFound => {
                 log::info!("Creating backing directory {}", backing_dir.display());
-                fs::create_dir_all(&backing_dir).with_context(|| {
+                tokio::fs::create_dir(&backing_dir).await.with_context(|| {
                     format!(
                         "Failed to create backing directory {}",
                         backing_dir.display()
                     )
                 })?;
             }
-            Err(e) => {
+            Err(err) => {
                 return Err(err!(
                     "Backing directory is not accessible: {} ({})",
                     backing_dir.display(),
-                    e
+                    err
                 ));
             }
         }
 
         // Validate that the mount point exists.
-        match mount_cfg.mountpoint().try_exists() {
-            Ok(true) => {}
-            Ok(false) => {
+        match tokio::fs::metadata(mount_cfg.mountpoint()).await {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    return Err(err!(
+                        "Mount point is not a directory: {}",
+                        mount_cfg.mountpoint().display()
+                    ));
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {
                 return Err(err!(
                     "Mount point does not exist: {}",
                     mount_cfg.mountpoint().display()
                 ));
             }
-            Err(e) => {
+            Err(err) => {
                 // ENOTCONN means there is a stale FUSE mount left over from a
                 // previous daemon run (e.g. after a crash or SIGKILL). The
                 // kernel still has the mountpoint in the VFS table but the
                 // FUSE endpoint is gone, so every stat() returns ENOTCONN.
                 // Try to detach it so we can mount cleanly.
-                if e.raw_os_error() == Some(ENOTCONN as i32) {
+                if err.raw_os_error() == Some(ENOTCONN as i32) {
                     log::warn!(
                         "Stale FUSE mount detected at '{}' (ENOTCONN), attempting cleanup.",
                         mount_cfg.mountpoint().display()
@@ -149,16 +156,10 @@ async fn async_main(args: Args) -> ah::Result<()> {
                     return Err(err!(
                         "Mount point is not accessible: {} ({})",
                         mount_cfg.mountpoint().display(),
-                        e
+                        err
                     ));
                 }
             }
-        }
-        if !mount_cfg.mountpoint().is_dir() {
-            return Err(err!(
-                "Mount point is not a directory: {}",
-                mount_cfg.mountpoint().display()
-            ));
         }
 
         // Guard against misconfiguration where the mountpoint overlaps with the

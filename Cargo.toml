@@ -24,7 +24,7 @@ log = "0.4"
 nix = { version = "0.31", default-features = false, features = [ "dir", "fs", "mount", "process", "user" ] }
 rustix = { version = "1", default-features = false, features = [ "process" ] }
 serde = { version = "1", features = [ "derive" ] }
-tokio = { version = "1", default-features = false, features = [ "rt-multi-thread", "time", "macros", "sync", "signal" ] }
+tokio = { version = "1", default-features = false, features = [ "rt-multi-thread", "time", "macros", "sync", "signal", "fs", "io-util" ] }
 tokio-stream = "0.1"
 toml = "1.1"
 uuid = { version = "1", features = ["v4"] }
