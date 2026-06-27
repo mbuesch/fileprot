@@ -80,7 +80,7 @@ install_user_service()
     do_install \
         -o root -g root -m 0644 \
         "$basedir/systemd/fileprot.service" \
-        /usr/lib/systemd/user/fileprot.service
+        /etc/systemd/user/fileprot.service
 }
 
 release="release"
