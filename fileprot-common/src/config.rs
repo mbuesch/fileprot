@@ -1,9 +1,15 @@
 use crate::{DEFAULT_BACKING_BASE_DIR, DEFAULT_GUI_BINARY_PATH};
 use anyhow::{self as ah, Context, format_err as err};
-use nix::unistd::{Group, User};
+use nix::{
+    fcntl::{OFlag, open},
+    sys::stat::{Mode, fstat},
+    unistd::{Group, User, geteuid},
+};
 use serde::Deserialize;
 use std::{
-    fs,
+    fs::File,
+    io::Read,
+    os::fd::AsFd,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -245,9 +251,51 @@ fn default_backing_base_dir() -> PathBuf {
 impl Config {
     /// Load configuration from the given path.
     pub fn load(path: &Path) -> ah::Result<Self> {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read config '{}'", path.display()))?;
-        let mut config: Config = toml::from_str(&content).context("failed to parse config")?;
+        let file_fd = open(path, OFlag::O_RDONLY | OFlag::O_CLOEXEC, Mode::empty())
+            .with_context(|| format!("Failed to open config '{}'", path.display()))?;
+        let st = fstat(file_fd.as_fd())
+            .with_context(|| format!("Failed to stat config file '{}'", path.display()))?;
+        let uid = st.st_uid;
+        let mode = st.st_mode & 0o777;
+        let daemon_euid = geteuid().as_raw();
+        if uid != daemon_euid {
+            return Err(err!(
+                "Config file '{}' is not owned by the fileprotd's effective user id \
+                (file uid {uid} != daemon euid {daemon_euid}). \
+                This is unsafe! \
+                Change file ownership to {daemon_euid}",
+                path.display(),
+            ));
+        }
+        if mode & 0o004 != 0 {
+            return Err(err!(
+                "Config file '{}' is world-readable (mode {mode:03o}). \
+                This is unsafe! \
+                Tighten permissions to at most 640",
+                path.display(),
+            ));
+        }
+        if mode & 0o002 != 0 {
+            return Err(err!(
+                "Config file '{}' is world-writable (mode {mode:03o}). \
+                This is unsafe! \
+                Tighten permissions to at most 640",
+                path.display(),
+            ));
+        }
+        if mode & 0o020 != 0 {
+            return Err(err!(
+                "Config file '{}' is group-writable (mode {mode:03o}). \
+                This is unsafe! \
+                Tighten permissions to at most 640",
+                path.display(),
+            ));
+        }
+        let mut file = File::from(file_fd);
+        let mut content = String::new();
+        file.read_to_string(&mut content)
+            .with_context(|| format!("Failed to read config '{}'", path.display()))?;
+        let mut config: Config = toml::from_str(&content).context("Failed to parse config")?;
         config.resolve_backing_dirs();
         config.resolve_uid_gid()?;
         config.validate()?;
