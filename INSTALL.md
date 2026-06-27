@@ -68,7 +68,7 @@ The tray GUI (`fileprot`) can be started as a systemd user service, which automa
 
 ```bash
 # Run as user (NOT root)
-./restart-user.sh
+./install-user.sh
 ```
 
 Check status:
@@ -84,4 +84,4 @@ journalctl --user -u fileprot.service -f
 ```
 
 The systemd user service is installed automatically during `sudo ./install.sh`.
-The `restart-user.sh` script enables and starts the service.
+The `install-user.sh` script enables and starts the service.
