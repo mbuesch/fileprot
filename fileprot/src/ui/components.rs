@@ -48,30 +48,33 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
                     button {
                         class: "btn btn-approve",
                         onclick: move |_| {
-                            dbus_tx.send(DbusAction::Respond {
-                                request_id: req_id_approve.clone(),
-                                scope: "default",
-                            });
+                            dbus_tx
+                                .send(DbusAction::Respond {
+                                    request_id: req_id_approve.clone(),
+                                    scope: "default",
+                                });
                         },
                         "\u{2713} Approve once"
                     }
                     button {
                         class: "btn btn-approve-prog",
                         onclick: move |_| {
-                            dbus_tx.send(DbusAction::Respond {
-                                request_id: req_id_approve_name.clone(),
-                                scope: "name",
-                            });
+                            dbus_tx
+                                .send(DbusAction::Respond {
+                                    request_id: req_id_approve_name.clone(),
+                                    scope: "name",
+                                });
                         },
                         "\u{2713} Approve this program + any path"
                     }
                     button {
                         class: "btn btn-approve-any",
                         onclick: move |_| {
-                            dbus_tx.send(DbusAction::Respond {
-                                request_id: req_id_approve_any.clone(),
-                                scope: "any",
-                            });
+                            dbus_tx
+                                .send(DbusAction::Respond {
+                                    request_id: req_id_approve_any.clone(),
+                                    scope: "any",
+                                });
                         },
                         "\u{2713} Approve any"
                     }
@@ -79,10 +82,11 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
                 button {
                     class: "btn btn-deny",
                     onclick: move |_| {
-                        dbus_tx.send(DbusAction::Respond {
-                            request_id: req_id_deny.clone(),
-                            scope: "deny",
-                        });
+                        dbus_tx
+                            .send(DbusAction::Respond {
+                                request_id: req_id_deny.clone(),
+                                scope: "deny",
+                            });
                     },
                     "\u{2715} Deny"
                 }

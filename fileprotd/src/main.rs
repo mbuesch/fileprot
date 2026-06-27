@@ -171,8 +171,8 @@ async fn async_main(args: Args) -> ah::Result<()> {
         // This eliminates the TOCTOU window that exists between
         // canonicalize() and spawn_mount2().
         {
-            let mp_id = fd_id(open_o_path(mount_cfg.mountpoint())?)?;
-            let bd_id = fd_id(open_o_path(&mount_cfg.backing_dir())?)?;
+            let mp_id = fd_id(open_o_path(mount_cfg.mountpoint()).await?).await?;
+            let bd_id = fd_id(open_o_path(&mount_cfg.backing_dir()).await?).await?;
 
             if mp_id == bd_id {
                 return Err(err!(
@@ -181,14 +181,14 @@ async fn async_main(args: Args) -> ah::Result<()> {
                     mount_cfg.backing_dir().display(),
                 ));
             }
-            if is_fd_inside(open_o_path(mount_cfg.mountpoint())?, bd_id)? {
+            if is_fd_inside(open_o_path(mount_cfg.mountpoint()).await?, bd_id).await? {
                 return Err(err!(
                     "Mount point '{}' is inside backing directory '{}' - refusing to mount",
                     mount_cfg.mountpoint().display(),
                     mount_cfg.backing_dir().display(),
                 ));
             }
-            if is_fd_inside(open_o_path(&mount_cfg.backing_dir())?, mp_id)? {
+            if is_fd_inside(open_o_path(&mount_cfg.backing_dir()).await?, mp_id).await? {
                 return Err(err!(
                     "Backing directory '{}' is inside mount point '{}' - refusing to mount",
                     mount_cfg.backing_dir().display(),
@@ -221,14 +221,16 @@ async fn async_main(args: Args) -> ah::Result<()> {
             coupling,
             renewal,
         ));
-        let backing_fd = open_dir_components(&mount_cfg.backing_dir()).map_err(|e| {
-            err!(
-                "Failed to open backing directory '{}' for mount '{}': {}",
-                mount_cfg.backing_dir().display(),
-                mount_cfg.name(),
-                e
-            )
-        })?;
+        let backing_fd = open_dir_components(&mount_cfg.backing_dir())
+            .await
+            .map_err(|e| {
+                err!(
+                    "Failed to open backing directory '{}' for mount '{}': {}",
+                    mount_cfg.backing_dir().display(),
+                    mount_cfg.name(),
+                    e
+                )
+            })?;
 
         let fs = filesystem::ProtectedFilesystem::new(
             mount_cfg.name().to_string(),

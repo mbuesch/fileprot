@@ -297,7 +297,7 @@ impl Config {
         let mut config: Config = toml::from_str(&content).context("Failed to parse config")?;
         config.resolve_backing_dirs();
         config.resolve_uid_gid()?;
-        config.validate()?;
+        config.validate().await?;
         Ok(config)
     }
 
@@ -329,7 +329,7 @@ impl Config {
         Ok(())
     }
 
-    fn validate(&self) -> ah::Result<()> {
+    async fn validate(&self) -> ah::Result<()> {
         {
             let base = self.backing_base_dir();
             // Verify that the backing base directory is an absolute path.
@@ -341,7 +341,7 @@ impl Config {
             }
             // Verify that the backing base directory is owned by root and not
             // accessible to group or other.
-            let base_fd = open_dir_components(base).map_err(|e| {
+            let base_fd = open_dir_components(base).await.map_err(|e| {
                 err!(
                     "Failed to open backing base directory '{}': {}",
                     base.display(),
