@@ -6,8 +6,8 @@ basedir="$(dirname "$(realpath "$0")")"
 
 entry_checks()
 {
-    [ -f "$target/fileprotd" ] || die "fileprot is not built! Run: cargo build --release"
-    [ -f "$target/fileprot" ]  || die "fileprot is not built! Run: cargo build --release"
+    [ -f "$target/fileprotd" ] || die "fileprot is not built! Run: cargo build --$release"
+    [ -f "$target/fileprot" ]  || die "fileprot is not built! Run: cargo build --$release"
 
     [ "$(id -u)" = "0" ] || die "Must be root to install fileprot."
 }
