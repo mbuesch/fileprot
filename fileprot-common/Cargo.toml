@@ -6,8 +6,9 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+libc = { workspace = true }
 nix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-toml = { workspace = true }
 tokio = { workspace = true }
+toml = { workspace = true }
 zbus = { workspace = true, features = ["blocking-api"] }

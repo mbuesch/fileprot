@@ -1,12 +1,14 @@
-use anyhow::{self as ah, format_err as err};
+use anyhow::{self as ah, Context as _, format_err as err};
 use nix::{
     fcntl::{AtFlags, OFlag, open, openat},
     sys::stat::{FileStat, Mode, fstatat},
 };
 use std::{
     os::fd::{AsFd, OwnedFd},
+    os::unix::fs::MetadataExt,
     path::{Component, Path},
 };
+use tokio::fs::OpenOptions;
 
 /// Open `path` with `O_PATH | O_CLOEXEC`.
 pub fn open_o_path(path: &Path) -> ah::Result<OwnedFd> {
@@ -69,6 +71,27 @@ pub fn open_dir_components(path: &Path) -> ah::Result<OwnedFd> {
         }
     }
     Ok(current)
+}
+
+/// Open `path` with `O_PATH | O_CLOEXEC` and return its `(dev, ino)` via `fstat`.
+///
+/// `O_PATH` has the kernel resolve the path (including magic symlinks such as
+/// `/proc/<pid>/exe`) to a file-descriptor that refers directly to the target
+/// inode.  `fstat` on that fd returns the inode's identity without a second
+/// round of userspace symlink resolution on the resolved path string, which
+/// `fs::metadata` would otherwise perform.
+pub async fn stat_o_path(path: &str) -> ah::Result<(u64, u64)> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+        .open(path)
+        .await
+        .with_context(|| format!("O_PATH open failed: {}", path))?;
+    let meta = file
+        .metadata()
+        .await
+        .with_context(|| format!("fstat failed: {}", path))?;
+    Ok((meta.dev(), meta.ino()))
 }
 
 /// Return `(st_dev, st_ino)` for the directory referenced by `fd`.

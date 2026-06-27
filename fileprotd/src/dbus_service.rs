@@ -1,17 +1,15 @@
 use crate::access_control::{AccessRequest, ApprovalDecision};
 use anyhow::{self as ah, Context, format_err as err};
-use fileprot_common::{DBUS_BUS_NAME, DBUS_OBJECT_PATH, dbus_interface::AccessControlRequest};
+use fileprot_common::{
+    DBUS_BUS_NAME, DBUS_OBJECT_PATH, dbus_interface::AccessControlRequest, fileops::stat_o_path,
+};
 use rustix::process::{Pid as RustixPid, PidfdFlags, pidfd_open};
 use std::{
     collections::HashMap,
-    os::unix::fs::MetadataExt,
     path::PathBuf,
     sync::{Arc, mpsc as std_mpsc},
 };
-use tokio::{
-    fs::OpenOptions,
-    sync::{Mutex, mpsc},
-};
+use tokio::sync::{Mutex, mpsc};
 use zbus::{Connection, connection, interface, object_server::SignalEmitter};
 
 /// D-Bus peer-verification options (for testing only).
@@ -279,27 +277,6 @@ impl AccessControlService {
         );
         Ok(())
     }
-}
-
-/// Open `path` with `O_PATH | O_CLOEXEC` and return its `(dev, ino)` via `fstat`.
-///
-/// `O_PATH` has the kernel resolve the path (including magic symlinks such as
-/// `/proc/<pid>/exe`) to a file-descriptor that refers directly to the target
-/// inode.  `fstat` on that fd returns the inode's identity without a second
-/// round of userspace symlink resolution on the resolved path string, which
-/// `fs::metadata` would otherwise perform.
-async fn stat_o_path(path: &str) -> ah::Result<(u64, u64)> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
-        .open(path)
-        .await
-        .with_context(|| format!("O_PATH open failed: {}", path))?;
-    let meta = file
-        .metadata()
-        .await
-        .with_context(|| format!("fstat failed: {}", path))?;
-    Ok((meta.dev(), meta.ino()))
 }
 
 /// Start the D-Bus service and a background task that processes incoming access requests.
