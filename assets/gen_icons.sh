@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-basedir="$(realpath "$0" | xargs dirname)"
+basedir="$(dirname "$(realpath "$0")")"
 
 SRC="$basedir/icon_raw_2.png"
 DST="$basedir/icon.png"
