@@ -18,12 +18,12 @@ pub async fn open_o_path(path: &Path) -> ah::Result<OwnedFd> {
     let path = path.to_path_buf();
     spawn_blocking(move || open_o_path_blocking(&path))
         .await
-        .map_err(|e| err!("open_o_path task panicked: {}", e))?
+        .map_err(|e| err!("open_o_path task panicked: {e}"))?
 }
 
 fn open_o_path_blocking(path: &Path) -> ah::Result<OwnedFd> {
     open(path, OFlag::O_PATH | OFlag::O_CLOEXEC, Mode::empty())
-        .map_err(|e| err!("Failed to open '{}' with O_PATH: {}", path.display(), e))
+        .map_err(|e| err!("Failed to open '{}' with O_PATH: {e}", path.display()))
 }
 
 /// Walk every component of `path` with
@@ -37,7 +37,7 @@ pub async fn open_dir_components(path: &Path) -> ah::Result<OwnedFd> {
     let path = path.to_path_buf();
     spawn_blocking(move || open_dir_components_blocking(&path))
         .await
-        .map_err(|e| err!("open_dir_components task panicked: {}", e))?
+        .map_err(|e| err!("open_dir_components task panicked: {e}"))?
 }
 
 fn open_dir_components_blocking(path: &Path) -> ah::Result<OwnedFd> {
@@ -53,7 +53,7 @@ fn open_dir_components_blocking(path: &Path) -> ah::Result<OwnedFd> {
         OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|e| err!("Failed to open '/': {}", e))?;
+    .map_err(|e| err!("Failed to open '/': {e}"))?;
 
     for component in path.components() {
         match component {
@@ -69,10 +69,9 @@ fn open_dir_components_blocking(path: &Path) -> ah::Result<OwnedFd> {
                 )
                 .map_err(|e| {
                     err!(
-                        "Failed to open directory component '{}' of '{}': {}",
+                        "Failed to open directory component '{}' of '{}': {e}",
                         name.to_string_lossy(),
-                        path.display(),
-                        e
+                        path.display()
                     )
                 })?;
                 current = next;
@@ -103,11 +102,11 @@ pub async fn stat_o_path(path: &str) -> ah::Result<(u64, u64)> {
         .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
         .open(path)
         .await
-        .with_context(|| format!("O_PATH open failed: {}", path))?;
+        .with_context(|| format!("O_PATH open failed: {path}"))?;
     let meta = file
         .metadata()
         .await
-        .with_context(|| format!("fstat failed: {}", path))?;
+        .with_context(|| format!("fstat failed: {path}"))?;
     Ok((meta.dev(), meta.ino()))
 }
 
@@ -118,12 +117,12 @@ pub async fn stat_o_path(path: &str) -> ah::Result<(u64, u64)> {
 pub async fn fd_id(fd: OwnedFd) -> ah::Result<(u64, u64)> {
     spawn_blocking(move || fd_id_blocking(fd.as_fd()))
         .await
-        .map_err(|e| err!("fd_id task panicked: {}", e))?
+        .map_err(|e| err!("fd_id task panicked: {e}"))?
 }
 
 fn fd_id_blocking(fd: impl AsFd) -> ah::Result<(u64, u64)> {
     let st: FileStat =
-        fstatat(fd, ".", AtFlags::empty()).map_err(|e| err!("fstatat failed: {}", e))?;
+        fstatat(fd, ".", AtFlags::empty()).map_err(|e| err!("fstatat failed: {e}"))?;
     Ok((st.st_dev as u64, st.st_ino as u64))
 }
 
@@ -136,7 +135,7 @@ fn fd_id_blocking(fd: impl AsFd) -> ah::Result<(u64, u64)> {
 pub async fn is_fd_inside(child_fd: OwnedFd, ancestor_id: (u64, u64)) -> ah::Result<bool> {
     spawn_blocking(move || is_fd_inside_blocking(child_fd, ancestor_id))
         .await
-        .map_err(|e| err!("is_fd_inside task panicked: {}", e))?
+        .map_err(|e| err!("is_fd_inside task panicked: {e}"))?
 }
 
 fn is_fd_inside_blocking(child_fd: OwnedFd, ancestor_id: (u64, u64)) -> ah::Result<bool> {
@@ -152,7 +151,7 @@ fn is_fd_inside_blocking(child_fd: OwnedFd, ancestor_id: (u64, u64)) -> ah::Resu
             OFlag::O_PATH | OFlag::O_CLOEXEC,
             Mode::empty(),
         )
-        .map_err(|e| err!("openat(\"..\") failed: {}", e))?;
+        .map_err(|e| err!("openat(\"..\") failed: {e}"))?;
         let par_id = fd_id_blocking(parent.as_fd())?;
         if par_id == cur_id {
             // Reached VFS root: ".." resolves to the same inode as ".".
