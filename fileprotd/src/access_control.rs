@@ -1,5 +1,6 @@
 use anyhow::{self as ah};
 use fileprot_common::{Operation, dbus_interface::AccessControlRequest};
+use rustix::process::{Pid as RustixPid, PidfdFlags, pidfd_open};
 use std::{
     collections::{HashMap, hash_map::Entry},
     fs,
@@ -90,11 +91,15 @@ pub struct ProcessIdentity {
 }
 
 impl ProcessIdentity {
-    /// Snapshot a process's identity and derive its app name from the
-    /// executable path, using a single coherent set of `/proc/<pid>/` reads to
-    /// minimise the PID-reuse race window. Returns `None` if the process has
-    /// already exited or any required `/proc` entry is unreadable.
+    /// Snapshot a process's identity and derive its app name from the executable path.
     pub fn snapshot(pid: u32, uid: u32) -> Option<(Self, String)> {
+        // Open a pidfd before any /proc/<pid>/... reads to keep the PID alive
+        // for the duration of this function.
+        // Note that this is not perfect, because the process may have exited
+        // and the PID could have been reused before we opened the pidfd.
+        // This just protects against reuse between the two proc reads.
+        let rpid = RustixPid::from_raw(pid as i32)?;
+        let _pidfd = pidfd_open(rpid, PidfdFlags::empty()).ok()?;
         let exe_path = fs::read_link(format!("/proc/{}/exe", pid)).ok()?;
         let start_time = Self::read_start_time(pid)?;
         let app_name = exe_path.file_name()?.to_str()?.to_owned();
