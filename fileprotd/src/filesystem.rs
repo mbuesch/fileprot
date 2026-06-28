@@ -592,7 +592,13 @@ impl Filesystem for ProtectedFilesystem {
         };
 
         // Request access approval for setattr.
-        match self.request_access(req, &rel_path, Operation::SetAttr) {
+        let oper = if size.is_some() {
+            // Truncation is a write operation.
+            Operation::Write
+        } else {
+            Operation::SetAttr
+        };
+        match self.request_access(req, &rel_path, oper) {
             Err(e) => {
                 reply.error(e);
                 return;
@@ -603,9 +609,6 @@ impl Filesystem for ProtectedFilesystem {
             }
             Ok(true) => {}
         }
-
-        let backing_display = self.backing_path_display(&rel_path);
-        let _ = backing_display;
 
         // Handle truncation.
         if let Some(new_size) = size {
@@ -642,9 +645,7 @@ impl Filesystem for ProtectedFilesystem {
                         return;
                     }
                 };
-                // File::from(OwnedFd) is a safe conversion.
-                let file = File::from(fd);
-                if file.set_len(new_size).is_err() {
+                if File::from(fd).set_len(new_size).is_err() {
                     reply.error(Errno::EIO);
                     return;
                 }
