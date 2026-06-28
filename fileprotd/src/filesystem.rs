@@ -798,20 +798,19 @@ impl Filesystem for ProtectedFilesystem {
         // entries not yet known, avoiding per-entry write-lock acquisition and
         // the associated stall / leak risk on EOVERFLOW.
         struct RawEntry {
-            name: String,
+            name: OsString,
             child_rel: PathBuf,
             file_type: FileType,
         }
-        let mut raw: Vec<RawEntry> = vec![];
+        let mut raw: Vec<RawEntry> = Vec::with_capacity(128);
         for entry in dir.into_iter().flatten() {
             let name_cstr = entry.file_name();
-            let name_os = OsStr::from_bytes(name_cstr.to_bytes());
+            let name = OsStr::from_bytes(name_cstr.to_bytes());
             // Skip . and .. - we add them ourselves below.
-            if name_os == "." || name_os == ".." {
+            if name == "." || name == ".." {
                 continue;
             }
-            let name = name_os.to_string_lossy().into_owned();
-            let child_rel = rel_path.join(&name);
+            let child_rel = rel_path.join(name);
             let file_type = match entry.file_type() {
                 Some(ft) => match ft {
                     nix::dir::Type::Directory => FileType::Directory,
@@ -821,15 +820,16 @@ impl Filesystem for ProtectedFilesystem {
                 None => FileType::RegularFile,
             };
             raw.push(RawEntry {
-                name,
+                name: name.to_owned(),
                 child_rel,
                 file_type,
             });
         }
 
         // Resolve inode numbers under a single read lock snapshot.
-        let mut full_entries: Vec<(INodeNo, FileType, String)> = vec![];
-        full_entries.push((ino, FileType::Directory, ".".to_string()));
+        let mut full_entries: Vec<(INodeNo, FileType, OsString)> =
+            Vec::with_capacity(raw.len() + 2);
+        full_entries.push((ino, FileType::Directory, OsString::from(".")));
         {
             let path_map = self.path_to_inode.read().expect("Lock poisoned");
             let parent_ino = if ino == ROOT_INODE {
@@ -841,7 +841,7 @@ impl Filesystem for ProtectedFilesystem {
                     .map(|&v| INodeNo(v))
                     .unwrap_or(ROOT_INODE)
             };
-            full_entries.push((parent_ino, FileType::Directory, "..".to_string()));
+            full_entries.push((parent_ino, FileType::Directory, OsString::from("..")));
             for e in raw {
                 let child_ino = path_map
                     .get(&e.child_rel)
