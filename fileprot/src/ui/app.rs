@@ -37,6 +37,46 @@ fn get_cursor_position() -> Option<(i32, i32)> {
     Some((reply.root_x as i32, reply.root_y as i32))
 }
 
+fn clamp_window_position(
+    monitor_pos: (i32, i32),
+    monitor_size: (u32, u32),
+    window_size: (u32, u32),
+    cursor_pos: Option<(i32, i32)>,
+) -> (i32, i32) {
+    let (m_x, m_y) = monitor_pos;
+    let (m_w, m_h) = monitor_size;
+    let (w_w, w_h) = window_size;
+
+    let padding = 8;
+
+    if let Some((cx, cy)) = cursor_pos {
+        let x = cx - w_w as i32 / 2;
+        let y = cy - w_h as i32 / 2;
+        let min_x = m_x + padding;
+        let max_x = m_x + m_w as i32 - w_w as i32 - padding;
+        let min_y = m_y + padding;
+        let max_y = m_y + m_h as i32 - w_h as i32 - padding;
+
+        let x = if max_x >= min_x {
+            x.clamp(min_x, max_x)
+        } else {
+            m_x + (m_w as i32 - w_w as i32) / 2
+        };
+        let y = if max_y >= min_y {
+            y.clamp(min_y, max_y)
+        } else {
+            m_y + (m_h as i32 - w_h as i32) / 2
+        };
+
+        (x, y)
+    } else {
+        (
+            m_x + (m_w as i32 - w_w as i32) / 2,
+            m_y + (m_h as i32 - w_h as i32) / 2,
+        )
+    }
+}
+
 fn raise_window(w: &tao::window::Window) {
     w.set_visible(true);
     w.set_minimized(false);
@@ -62,24 +102,12 @@ fn raise_window(w: &tao::window::Window) {
         let m_pos = monitor.position();
         let w_size = w.outer_size();
 
-        let (x, y) = if let Some((cx, cy)) = cursor_pos {
-            // Center the window on the cursor, clamped to stay fully within the monitor.
-            let wx = cx - w_size.width as i32 / 2;
-            let wy = cy - w_size.height as i32 / 2;
-            let wx = wx
-                .max(m_pos.x)
-                .min(m_pos.x + m_size.width as i32 - w_size.width as i32);
-            let wy = wy
-                .max(m_pos.y)
-                .min(m_pos.y + m_size.height as i32 - w_size.height as i32);
-            (wx, wy)
-        } else {
-            // Fall back to centering on the monitor.
-            (
-                m_pos.x + (m_size.width as i32 - w_size.width as i32) / 2,
-                m_pos.y + (m_size.height as i32 - w_size.height as i32) / 2,
-            )
-        };
+        let (x, y) = clamp_window_position(
+            (m_pos.x, m_pos.y),
+            (m_size.width, m_size.height),
+            (w_size.width, w_size.height),
+            cursor_pos,
+        );
 
         w.set_outer_position(tao::dpi::PhysicalPosition::new(x, y));
     }
