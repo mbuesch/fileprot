@@ -46,11 +46,15 @@ struct Args {
     #[arg(short = 'c', long = "config")]
     config: Option<PathBuf>,
 
-    /// Disable GUI peer verification via exe inode check (for testing only)
+    /// Disable GUI peer verification via exe inode check (for testing only!)
+    ///
+    /// This is a security-sensitive option that should only be used for testing.
     #[arg(long = "no-verify-peer-exe")]
     no_verify_peer_exe: bool,
 
-    /// Disable GUI peer verification via UID check (for testing only)
+    /// Disable GUI peer verification via UID check (for testing only!)
+    ///
+    /// This is a security-sensitive option that should only be used for testing.
     #[arg(long = "no-verify-peer-uid")]
     no_verify_peer_uid: bool,
 }
@@ -73,6 +77,18 @@ async fn async_main(args: Args) -> ah::Result<()> {
     let (request_tx, request_rx) = mpsc::channel(256);
 
     // Start the D-Bus service.
+    if args.no_verify_peer_exe {
+        log::warn!(
+            "Peer exe verification is disabled via command-line argument --no-verify-peer-exe. \
+            This is a security-sensitive option that should only be used for testing."
+        );
+    }
+    if args.no_verify_peer_uid {
+        log::warn!(
+            "Peer UID verification is disabled via command-line argument --no-verify-peer-uid. \
+            This is a security-sensitive option that should only be used for testing."
+        );
+    }
     let peer_verification = dbus_service::PeerVerification {
         verify_exe: !args.no_verify_peer_exe,
         verify_uid: !args.no_verify_peer_uid,
