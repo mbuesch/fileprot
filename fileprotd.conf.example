@@ -12,7 +12,7 @@ gui_binary_path = "/opt/fileprot/bin/fileprot"
 # Timeout in seconds for access requests.
 # If no response is received within this time, the request is automatically denied.
 #
-request_timeout_secs = 120
+request_timeout_secs = 30
 
 # How long (in seconds) to remember an approval for a specific process without
 # prompting again. The cached approval is bound to the PID, UID, executable

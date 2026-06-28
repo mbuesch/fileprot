@@ -36,7 +36,7 @@ pub enum ApprovalDecision {
     /// Approve using the AccessController's configured coupling mode
     /// (determined by `ApprovalCoupling` at construction time).
     ApproveDefault,
-    /// Approve and cache keyed on process exe, path, and operation.
+    /// Approve and cache keyed on process exe, mountpoint and operation.
     /// Future requests from any process sharing the same executable will
     /// be auto-approved within the TTL window.
     ApproveExe,
