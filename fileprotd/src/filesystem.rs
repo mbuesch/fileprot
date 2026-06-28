@@ -39,6 +39,7 @@ use std::{
 const TTL: Duration = Duration::from_secs(1);
 const ROOT_INODE: INodeNo = INodeNo(1);
 const READ_MAX_SIZE: usize = 1024 * 1024;
+const MAX_NR_OPEN_FILES: usize = 0x7FFF;
 
 /// Only the nine standard rwx bits (owner/group/other) are permitted on
 /// backing-directory files. All other bits (setuid, setgid, sticky, …) are
@@ -398,13 +399,21 @@ impl ProtectedFilesystem {
             .next_fh
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
             .ok()?;
-        self.open_files.write().expect("Lock poisoned").insert(
-            fh,
-            OpenFileHandle {
-                file,
-                _inode: inode,
-            },
-        );
+        let handle = OpenFileHandle {
+            file,
+            _inode: inode,
+        };
+        {
+            let mut open_files = self.open_files.write().expect("Lock poisoned");
+            if open_files.len() >= MAX_NR_OPEN_FILES {
+                log::warn!(
+                    "Maximum number of open files reached ({MAX_NR_OPEN_FILES}); \
+                    Cannot allocate a new file handle."
+                );
+                return None;
+            }
+            open_files.insert(fh, handle);
+        }
         Some(FuseFileHandle(fh))
     }
 
