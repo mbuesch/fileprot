@@ -9,6 +9,12 @@ Type=simple
 ExecStart=/opt/fileprot/bin/fileprot
 Restart=on-failure
 RestartSec=5
+NoNewPrivileges=yes
+MountFlags=shared
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
 
 [Install]
 WantedBy=default.target
