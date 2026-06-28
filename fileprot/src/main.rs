@@ -3,6 +3,7 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("fileprot only supports Linux");
 
+use crate::ui::{HEIGHT, WIDTH};
 use anyhow::{self as ah, Context as _};
 use clap::Parser;
 use dioxus::desktop::{
@@ -50,7 +51,7 @@ async fn async_main(args: Args) -> ah::Result<()> {
             WindowBuilder::new()
                 .with_title("fileprot - Access Requests")
                 .with_always_on_top(false)
-                .with_inner_size(LogicalSize::new(480.0, 265.0))
+                .with_inner_size(LogicalSize::new(WIDTH, HEIGHT))
                 .with_window_icon(load_window_icon())
                 .with_visible(args.visible),
         )

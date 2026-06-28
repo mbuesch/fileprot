@@ -77,8 +77,12 @@ fn clamp_window_position(
     }
 }
 
+/// Main window width, in pixels.
+pub const WIDTH: f64 = 480.0;
+/// Main window height, in pixels.
+pub const HEIGHT: f64 = 265.0;
+
 fn raise_window(w: &tao::window::Window) {
-    w.set_visible(true);
     w.set_minimized(false);
 
     let cursor_pos = get_cursor_position();
@@ -95,22 +99,40 @@ fn raise_window(w: &tao::window::Window) {
                     && cy < pos.y + size.height as i32
             })
         })
-        .or_else(|| w.current_monitor());
+        .or_else(|| w.current_monitor())
+        .or_else(|| w.available_monitors().next());
 
     if let Some(monitor) = monitor {
         let m_size = monitor.size();
         let m_pos = monitor.position();
+
+        // outer_size() returns (0, 0) before the webview has been laid out (first show).
+        // Fall back to the configured logical size scaled to physical pixels.
         let w_size = w.outer_size();
+        let scale = monitor.scale_factor();
+        let w_w = if w_size.width > 0 {
+            w_size.width
+        } else {
+            (WIDTH * scale).round() as u32
+        };
+        let w_h = if w_size.height > 0 {
+            w_size.height
+        } else {
+            (HEIGHT * scale).round() as u32
+        };
 
         let (x, y) = clamp_window_position(
             (m_pos.x, m_pos.y),
             (m_size.width, m_size.height),
-            (w_size.width, w_size.height),
+            (w_w, w_h),
             cursor_pos,
         );
 
+        // Position before making visible to avoid a flash at the wrong location.
         w.set_outer_position(tao::dpi::PhysicalPosition::new(x, y));
     }
+
+    w.set_visible(true);
     w.set_focus();
 }
 
@@ -122,7 +144,7 @@ fn use_tray_watcher(win: Arc<tao::window::Window>) {
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 if SHOW_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                    win.set_visible(true);
+                    raise_window(&win);
                 }
             }
         }
