@@ -11,6 +11,7 @@ use dioxus::desktop::{
 };
 use image::GenericImageView;
 use nix::sys::prctl;
+use std::sync::Arc;
 
 mod dbus_client;
 mod ui;
@@ -18,12 +19,20 @@ mod ui;
 const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
 
 /// Command-line arguments for fileprot.
-#[derive(Debug, Parser)]
+#[derive(Debug, PartialEq, Parser)]
 #[command(author, version, about = "fileprot - File Protection Tray")]
-struct Args {
+pub struct Args {
     /// Start with the window visible instead of hidden
-    #[arg(long)]
+    #[arg(long, short = 'V')]
     visible: bool,
+
+    /// Disable the "Enter" key as a shortcut for approving requests
+    #[arg(long, short = 'E')]
+    disable_enter_accept: bool,
+
+    /// Disable the "Esc" key as a shortcut for denying requests
+    #[arg(long, short = 'D')]
+    disable_esc_deny: bool,
 }
 
 fn load_window_icon() -> Option<tao::window::Icon> {
@@ -59,7 +68,10 @@ async fn async_main(args: Args) -> ah::Result<()> {
         .with_menu(None);
 
     tokio::task::unconstrained(async move {
-        builder.with_cfg(config).launch(ui::App);
+        builder
+            .with_cfg(config)
+            .with_context(Arc::new(args))
+            .launch(ui::App);
     })
     .await;
 

@@ -51,7 +51,7 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
                             dbus_tx
                                 .send(DbusAction::Respond {
                                     request_id: req_id_approve.clone(),
-                                    scope: "default",
+                                    scope: "approve-default",
                                 });
                         },
                         "\u{2713} Approve once"
@@ -62,7 +62,7 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
                             dbus_tx
                                 .send(DbusAction::Respond {
                                     request_id: req_id_approve_name.clone(),
-                                    scope: "name",
+                                    scope: "approve-exe",
                                 });
                         },
                         "\u{2713} Approve this program + any path"
@@ -73,7 +73,7 @@ pub fn RequestListEntry(req: AccessControlRequest, dbus_tx: Coroutine<DbusAction
                             dbus_tx
                                 .send(DbusAction::Respond {
                                     request_id: req_id_approve_any.clone(),
-                                    scope: "any",
+                                    scope: "approve-any",
                                 });
                         },
                         "\u{2713} Approve any"

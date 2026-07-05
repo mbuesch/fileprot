@@ -1,4 +1,5 @@
 use crate::{
+    Args,
     dbus_client::connect,
     ui::{components::RequestListEntry, tray::SHOW_REQUESTED},
 };
@@ -280,6 +281,7 @@ fn use_dbus_handler(
 
 #[component]
 pub fn App() -> Element {
+    let args = use_context::<Arc<Args>>();
     let requests = use_signal(Vec::<AccessControlRequest>::new);
     let error_sig = use_signal(|| None::<String>);
 
@@ -308,7 +310,31 @@ pub fn App() -> Element {
 
     rsx! {
         style { {CSS} }
-        div { class: "container",
+        div {
+            class: "container",
+            tabindex: "0",
+            autofocus: true,
+            onkeydown: move |evt: KeyboardEvent| {
+                if evt.key() == Key::Enter
+                    && !args.disable_enter_accept
+                    && let Some(req) = requests.read().first()
+                {
+                    dbus_coroutine
+                        .send(DbusAction::Respond {
+                            request_id: req.id.clone(),
+                            scope: "approve-default",
+                        });
+                } else if evt.key() == Key::Escape
+                  && !args.disable_esc_deny
+                    && let Some(req) = requests.read().first()
+                {
+                    dbus_coroutine
+                        .send(DbusAction::Respond {
+                            request_id: req.id.clone(),
+                            scope: "deny",
+                        });
+                }
+            },
             div { class: "header",
                 img {
                     class: "header-icon",

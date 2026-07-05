@@ -28,10 +28,10 @@ pub trait AccessControl {
 
     /// Respond to an access request.
     /// `scope` controls the approval decision and caching:
-    ///   - `"deny"`    - deny the request, no caching
-    ///   - `"default"` - approve using the daemon's configured coupling mode
-    ///   - `"name"`    - approve and cache by process name
-    ///   - `"any"`     - approve and cache uncoupled (any future process)
+    ///   - "deny"            - Deny the request, no caching
+    ///   - "approve-default" - Approve and cache according to the daemon's configured coupling mode
+    ///   - "approve-exe"     - Approve any path and cache by process executable path
+    ///   - "approve-any"     - Approve any path and cache for any future process
     /// Returns true if the request was found and the response was recorded.
     fn respond_to_request(&self, request_id: &str, scope: &str) -> zbus::Result<bool>;
 

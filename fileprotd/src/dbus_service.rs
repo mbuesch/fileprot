@@ -74,12 +74,6 @@ impl AccessControlService {
     /// The caller's binary is verified against the configured GUI path, and
     /// the caller's D-Bus UID must match the UID of the requesting process;
     /// this prevents User B from approving or denying User A's requests.
-    ///
-    /// `scope` controls the decision and caching:
-    ///   - `"deny"`    - deny the request
-    ///   - `"default"` - approve using the daemon's configured coupling mode
-    ///   - `"name"`    - approve and cache by process name
-    ///   - `"any"`     - approve and cache uncoupled (any future process)
     async fn respond_to_request(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -89,9 +83,9 @@ impl AccessControlService {
     ) -> zbus::fdo::Result<bool> {
         let decision = match scope {
             "deny" => ApprovalDecision::Deny,
-            "default" => ApprovalDecision::ApproveDefault,
-            "name" => ApprovalDecision::ApproveExe,
-            "any" => ApprovalDecision::ApproveAny,
+            "approve-default" => ApprovalDecision::ApproveDefault,
+            "approve-exe" => ApprovalDecision::ApproveExe,
+            "approve-any" => ApprovalDecision::ApproveAny,
             other => {
                 log::warn!("Unknown approval scope '{}', treating as deny", other);
                 ApprovalDecision::Deny
