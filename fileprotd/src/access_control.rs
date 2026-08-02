@@ -92,24 +92,41 @@ pub struct ProcessIdentity {
 
 impl ProcessIdentity {
     /// Snapshot a process's identity and derive its app name from the executable path.
+    ///
+    /// `pid` is whatever the FUSE kernel driver put in the request header,
+    /// which is the calling *thread's* id.
+    /// Resolve it to the owning thread-group id first so every thread
+    /// of a process maps to the same identity, and so `pidfd_open` succeeds.
     pub fn snapshot(pid: u32, uid: u32) -> Option<(Self, String)> {
-        // Open a pidfd before any /proc/<pid>/... reads to keep the PID alive
-        // for the duration of this function.
-        // Note that this is not perfect, because the process may have exited
-        // and the PID could have been reused before we opened the pidfd.
-        // This just protects against reuse between the two proc reads.
-        let rpid = RustixPid::from_raw(pid as i32)?;
-        let _pidfd = pidfd_open(rpid, PidfdFlags::empty()).ok()?;
-        let exe_path = fs::read_link(format!("/proc/{}/exe", pid)).ok()?;
-        let start_time = Self::read_start_time(pid)?;
+        // Keep the PID alive.
+        let _pid_ka = pidfd_open(RustixPid::from_raw(pid as i32)?, PidfdFlags::empty()).ok()?;
+
+        let tgid = Self::resolve_tgid(pid)?;
+
+        // Keep the thread-group leader alive.
+        let _tgid_ka = pidfd_open(RustixPid::from_raw(tgid as i32)?, PidfdFlags::empty()).ok()?;
+
+        let exe_path = fs::read_link(format!("/proc/{}/exe", tgid)).ok()?;
+        let start_time = Self::read_start_time(tgid)?;
         let app_name = exe_path.file_name()?.to_str()?.to_owned();
+
         let identity = ProcessIdentity {
-            pid,
+            pid: tgid,
             uid,
             exe_path,
             start_time,
         };
         Some((identity, app_name))
+    }
+
+    /// Resolve a thread id `pid` to the pid of the thread-group leader that owns it,
+    /// Returns `None` if the task has already exited.
+    fn resolve_tgid(pid: u32) -> Option<u32> {
+        let status = fs::read_to_string(format!("/proc/{}/status", pid)).ok()?;
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("Tgid:"))
+            .and_then(|rest| rest.trim().parse().ok())
     }
 
     /// Read the process start time from `/proc/<pid>/stat` (field 22).
@@ -129,6 +146,11 @@ impl ProcessIdentity {
         //  15: priority, 16: nice, 17: num_threads, 18: itrealvalue,
         //  19: starttime  <-- field 22 in the kernel docs (1-indexed)
         rest.split_whitespace().nth(19)?.parse().ok()
+    }
+
+    /// The resolved thread-group (process) id this identity refers to.
+    pub fn pid(&self) -> u32 {
+        self.pid
     }
 }
 

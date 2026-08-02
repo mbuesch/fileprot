@@ -445,7 +445,7 @@ impl ProtectedFilesystem {
 
         log::info!(
             "Access request: pid={} app='{}' path='{}' op={}",
-            pid,
+            identity.pid(),
             app_name,
             display_path,
             operation
