@@ -5,8 +5,10 @@ use crate::{
 };
 use base64::Engine;
 use dioxus::desktop::{tao, use_wry_event_handler, window};
+use dioxus::events::MountedData;
 use dioxus::prelude::*;
 use fileprot_common::dbus_interface::AccessControlRequest;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::{pin::pin, sync::LazyLock, time::Duration};
 use tokio_stream::StreamExt;
@@ -83,7 +85,7 @@ pub const WIDTH: f64 = 480.0;
 /// Main window height, in pixels.
 pub const HEIGHT: f64 = 265.0;
 
-fn raise_window(w: &tao::window::Window) {
+async fn raise_window(w: &tao::window::Window, content_element: Signal<Option<Rc<MountedData>>>) {
     w.set_minimized(false);
 
     let cursor_pos = get_cursor_position();
@@ -135,17 +137,26 @@ fn raise_window(w: &tao::window::Window) {
 
     w.set_visible(true);
     w.set_focus();
+
+    // set_focus() above only raises the OS window; it does not restore focus to
+    // any element inside the webview's DOM. Since the window is shown/hidden
+    // rather than recreated, the content div can be left without focus, so
+    // keydown handlers silently stop receiving events until the user clicks.
+    let element = content_element.read().clone();
+    if let Some(element) = element {
+        let _ = element.set_focus(true).await;
+    }
 }
 
 /// Coroutine that polls for show signals from the tray icon.
-fn use_tray_watcher(win: Arc<tao::window::Window>) {
+fn use_tray_watcher(win: Arc<tao::window::Window>, content_element: Signal<Option<Rc<MountedData>>>) {
     use_coroutine(move |_: UnboundedReceiver<()>| {
         let win = Arc::clone(&win);
         async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 if SHOW_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                    raise_window(&win);
+                    raise_window(&win, content_element).await;
                 }
             }
         }
@@ -157,6 +168,7 @@ fn use_dbus_handler(
     win: Arc<tao::window::Window>,
     mut requests: Signal<Vec<AccessControlRequest>>,
     mut error: Signal<Option<String>>,
+    content_element: Signal<Option<Rc<MountedData>>>,
 ) -> Coroutine<DbusAction> {
     use_coroutine(move |mut rx: UnboundedReceiver<DbusAction>| {
         let win = Arc::clone(&win);
@@ -179,7 +191,7 @@ fn use_dbus_handler(
                 Ok(pending) => {
                     if !pending.is_empty() {
                         log::info!("Loaded {} pending request(s)", pending.len());
-                        raise_window(&win);
+                        raise_window(&win, content_element).await;
                         // Push-merge by id: avoid overwriting entries already pushed
                         // by signals that may have arrived before this fetch completed.
                         let mut list = requests.write();
@@ -222,7 +234,7 @@ fn use_dbus_handler(
                                         Ok(pending) => {
                                             error.set(None);
                                             if !pending.is_empty() {
-                                                raise_window(&win);
+                                                raise_window(&win, content_element).await;
                                             }
                                             requests.set(pending);
                                         }
@@ -285,9 +297,11 @@ pub fn App() -> Element {
     let requests = use_signal(Vec::<AccessControlRequest>::new);
     let error_sig = use_signal(|| None::<String>);
 
+    let mut content_element = use_signal(|| None::<Rc<MountedData>>);
+
     let tao_window = Arc::clone(&window().window);
-    use_tray_watcher(Arc::clone(&tao_window));
-    let dbus_coroutine = use_dbus_handler(tao_window, requests, error_sig);
+    use_tray_watcher(Arc::clone(&tao_window), content_element);
+    let dbus_coroutine = use_dbus_handler(tao_window, requests, error_sig, content_element);
 
     // When the window is closed (hidden), deny all pending requests.
     let _close_handler = use_wry_event_handler(move |event, _| {
@@ -314,6 +328,7 @@ pub fn App() -> Element {
             class: "container",
             tabindex: "0",
             autofocus: true,
+            onmounted: move |evt| content_element.set(Some(evt.data())),
             onkeydown: move |evt: KeyboardEvent| {
                 if evt.key() == Key::Enter
                     && !args.disable_enter_accept
