@@ -7,7 +7,7 @@ use anyhow::{self as ah, Context as _, format_err as err};
 use clap::Parser;
 use fileprot_common::fileops::{fd_id, is_fd_inside, open_dir_components, open_o_path};
 use fileprot_common::{DEFAULT_CONFIG_PATH, config::Config};
-use fuser::{Config as FuserConfig, MountOption, SessionACL, spawn_mount2};
+use fuser::{Config as FuserConfig, MountOption, SessionACL, spawn_mount};
 use nix::{
     errno::Errno::ENOTCONN,
     mount::{MntFlags, umount2},
@@ -185,7 +185,7 @@ async fn async_main(args: Args) -> ah::Result<()> {
         // Open both paths with O_PATH so that subsequent fstat and openat(..)
         // calls operate on the actual inodes rather than on string paths.
         // This eliminates the TOCTOU window that exists between
-        // canonicalize() and spawn_mount2().
+        // canonicalize() and spawn_mount().
         {
             let mp_id = fd_id(open_o_path(mount_cfg.mountpoint()).await?).await?;
             let bd_id = fd_id(open_o_path(&mount_cfg.backing_dir()).await?).await?;
@@ -279,7 +279,7 @@ async fn async_main(args: Args) -> ah::Result<()> {
         ];
         fuser_config.acl = SessionACL::All;
 
-        match spawn_mount2(fs, mount_cfg.mountpoint(), &fuser_config) {
+        match spawn_mount(fs, mount_cfg.mountpoint(), &fuser_config) {
             Ok(session) => {
                 sessions.push((
                     mount_cfg.name().to_string(),
