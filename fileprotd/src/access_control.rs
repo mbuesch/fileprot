@@ -40,8 +40,9 @@ pub enum ApprovalDecision {
     /// Future requests from any process sharing the same executable will
     /// be auto-approved within the TTL window.
     ApproveExe,
-    /// Approve and cache uncoupled; any future process hitting the same
-    /// (path, operation) within the TTL will be auto-approved.
+    /// Approve and cache uncoupled;
+    /// Any future process hitting the same mountpoint
+    /// within the TTL will be auto-approved.
     ApproveAny,
 }
 
@@ -177,19 +178,44 @@ pub enum ApprovalCoupling {
 }
 
 /// Returns the set of operations to store in the cache when `op` is approved.
+#[rustfmt::skip]
 fn implied_ops(op: Operation) -> &'static [Operation] {
     match op {
-        Operation::Read => &[Operation::Read],
-        Operation::Write => &[Operation::Write, Operation::Read, Operation::SetAttr],
+        Operation::Read => &[
+            Operation::Read,
+        ],
+        Operation::Write => &[
+            Operation::Write,
+            Operation::Read,
+            Operation::SetAttr,
+        ],
         Operation::Create => &[
             Operation::Create,
             Operation::Write,
             Operation::Read,
             Operation::SetAttr,
         ],
-        Operation::SetAttr => &[Operation::SetAttr],
-        Operation::Mkdir => &[Operation::SetAttr],
-        Operation::Delete | Operation::Rename => &[],
+        Operation::SetAttr => &[
+            Operation::SetAttr,
+        ],
+        Operation::Mkdir => &[
+            Operation::Mkdir,
+            Operation::SetAttr,
+        ],
+        Operation::Delete => &[
+            Operation::Delete,
+            Operation::Create,
+            Operation::Write,
+            Operation::Read,
+            Operation::SetAttr,
+        ],
+        Operation::Rename => &[
+            Operation::Rename,
+            Operation::Create,
+            Operation::Write,
+            Operation::Read,
+            Operation::SetAttr,
+        ],
     }
 }
 
@@ -210,7 +236,6 @@ struct ExeCacheKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct AnyCacheKey {
-    pub operation: Operation,
     pub mount: String,
 }
 
@@ -310,7 +335,6 @@ impl AccessController {
             let mut cache = self.any_cache.lock().expect("Lock poisoned");
             cache.retain(|_, approved_at| approved_at.elapsed() < ttl);
             let key = AnyCacheKey {
-                operation,
                 mount: mount.to_string(),
             };
             if let Entry::Occupied(mut e) = cache.entry(key) {
@@ -418,15 +442,12 @@ impl AccessController {
                         return;
                     }
                 }
-                for &op in ops {
-                    cache.insert(
-                        AnyCacheKey {
-                            operation: op,
-                            mount: mount.to_string(),
-                        },
-                        now,
-                    );
-                }
+                cache.insert(
+                    AnyCacheKey {
+                        mount: mount.to_string(),
+                    },
+                    now,
+                );
             }
             ApprovalDecision::Deny => unreachable!("Deny handled above"),
         }

@@ -149,7 +149,10 @@ async fn raise_window(w: &tao::window::Window, content_element: Signal<Option<Rc
 }
 
 /// Coroutine that polls for show signals from the tray icon.
-fn use_tray_watcher(win: Arc<tao::window::Window>, content_element: Signal<Option<Rc<MountedData>>>) {
+fn use_tray_watcher(
+    win: Arc<tao::window::Window>,
+    content_element: Signal<Option<Rc<MountedData>>>,
+) {
     use_coroutine(move |_: UnboundedReceiver<()>| {
         let win = Arc::clone(&win);
         async move {
